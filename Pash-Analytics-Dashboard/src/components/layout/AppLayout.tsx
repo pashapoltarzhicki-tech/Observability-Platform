@@ -11,9 +11,8 @@ interface AppLayoutProps {
 
 export function AppLayout({ children }: AppLayoutProps) {
   const { isDark } = useTheme();
-  const [environment, setEnvironment] = useState('production');
-  const [branch, setBranch] = useState('main');
   const [searchOpen, setSearchOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -29,15 +28,12 @@ export function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <div className={clsx('min-h-screen flex', isDark ? 'bg-gray-950' : 'bg-gray-50')}>
-      <Sidebar />
-      <div className="flex-1 flex flex-col ml-60 min-w-0">
-        <Header
-          onSearchOpen={() => setSearchOpen(true)}
-          environment={environment}
-          onEnvironmentChange={setEnvironment}
-          branch={branch}
-          onBranchChange={setBranch}
-        />
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
+      <div
+        className="flex-1 flex flex-col min-w-0 transition-all duration-300"
+        style={{ marginLeft: sidebarCollapsed ? '4rem' : '15rem' }}
+      >
+        <Header onSearchOpen={() => setSearchOpen(true)} />
         <main className="flex-1 p-6 overflow-auto">
           {children}
         </main>

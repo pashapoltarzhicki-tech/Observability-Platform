@@ -4,6 +4,7 @@ const { Storage } = require('@google-cloud/storage');
 
 const app = express();
 app.use(cors());
+app.use(express.json({ limit: '50mb' }));
 
 const storage = new Storage();
 const BUCKET = 'argo-test-result-20251027';
@@ -118,12 +119,116 @@ app.get('/api/gcs/file', async (req, res) => {
     const file = storage.bucket(BUCKET).file(filePath);
     const [metadata] = await file.getMetadata();
     const contentType = metadata.contentType || guessContentType(filePath);
-    const [content] = await file.download();
+    const totalSize = parseInt(metadata.size || '0', 10);
+
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.send(content);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const rangeHeader = req.headers.range;
+    if (rangeHeader && totalSize > 0) {
+      // Parse "bytes=start-end"
+      const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
+      const start = parseInt(startStr, 10);
+      const end = endStr ? parseInt(endStr, 10) : totalSize - 1;
+      const chunkSize = end - start + 1;
+
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+      res.setHeader('Content-Length', chunkSize);
+      res.status(206);
+
+      const stream = file.createReadStream({ start, end });
+      stream.on('error', (err) => {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+      });
+      stream.pipe(res);
+    } else {
+      if (totalSize > 0) res.setHeader('Content-Length', totalSize);
+      const stream = file.createReadStream();
+      stream.on('error', (err) => {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+      });
+      stream.pipe(res);
+    }
   } catch (err) {
     console.error('file error:', err.message, filePath);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/gcs/proxy-url?url=<encoded-url>
+ * Proxies an absolute HTTPS URL with range request support (for video seeking).
+ */
+app.get('/api/gcs/proxy-url', async (req, res) => {
+  const url = req.query.url;
+  if (!url || (!url.startsWith('https://') && !url.startsWith('http://'))) {
+    return res.status(400).json({ error: 'Invalid url' });
+  }
+  try {
+    const headers = {};
+    if (req.headers.range) headers['Range'] = req.headers.range;
+
+    const upstream = await fetch(url, { headers });
+    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+    const contentLength = upstream.headers.get('content-length');
+    const contentRange = upstream.headers.get('content-range');
+    const acceptRanges = upstream.headers.get('accept-ranges');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
+    else res.setHeader('Accept-Ranges', 'bytes');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    if (contentRange) res.setHeader('Content-Range', contentRange);
+
+    res.status(upstream.status);
+    upstream.body.pipe(res);
+  } catch (err) {
+    console.error('proxy-url error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/gcs/upload
+ * Uploads a Playwright JSON report to GCS under the manual upload path.
+ * Body: { content: PlaywrightReport, name: string }
+ * Path: reports/YYYY/MM/DD/upload-{name}-{YYYY-MM-DD-HH-MM}/results.json
+ */
+app.post('/api/gcs/upload', async (req, res) => {
+  const { content, name } = req.body;
+  if (!content || !name) {
+    return res.status(400).json({ error: '`content` and `name` are required' });
+  }
+
+  const startTime = content?.stats?.startTime;
+  if (!startTime) {
+    return res.status(400).json({ error: 'Missing stats.startTime in report' });
+  }
+
+  const d = new Date(startTime);
+  if (isNaN(d.getTime())) {
+    return res.status(400).json({ error: 'Invalid stats.startTime in report' });
+  }
+
+  const yyyy = d.getUTCFullYear();
+  const mm   = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd   = String(d.getUTCDate()).padStart(2, '0');
+  const hh   = String(d.getUTCHours()).padStart(2, '0');
+  const min  = String(d.getUTCMinutes()).padStart(2, '0');
+
+  const safeName   = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
+  const datetime   = `${yyyy}-${mm}-${dd}-${hh}-${min}`;
+  const folderName = `manually-${safeName}-${datetime}`;
+  const gcsPath    = `reports/${yyyy}/${mm}/${dd}/${folderName}/results.json`;
+
+  try {
+    const file = storage.bucket(BUCKET).file(gcsPath);
+    await file.save(JSON.stringify(content), { contentType: 'application/json' });
+    res.json({ path: gcsPath, folderName, date: `${yyyy}-${mm}-${dd}` });
+  } catch (err) {
+    console.error('upload error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -20,21 +20,11 @@ const routeTitles: Record<string, string> = {
 
 interface HeaderProps {
   onSearchOpen: () => void;
-  environment: string;
-  onEnvironmentChange: (v: string) => void;
-  branch: string;
-  onBranchChange: (v: string) => void;
 }
 
-export function Header({
-  onSearchOpen,
-  environment,
-  onEnvironmentChange,
-  branch,
-  onBranchChange,
-}: HeaderProps) {
+export function Header({ onSearchOpen }: HeaderProps) {
   const { isDark, toggleTheme } = useTheme();
-  const { allBranches, dateFrom, setDateFrom, dateTo, setDateTo } = useReports();
+  const { allBranches, dateFrom, setDateFrom, dateTo, setDateTo, sourceFilter, setSourceFilter, branchFilter, setBranchFilter, filteredRuns } = useReports();
   const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notifCount] = useState(3);
@@ -49,10 +39,10 @@ export function Header({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Keep branch in sync with available branches
+  // Keep branchFilter in sync — reset to 'all' if selected branch disappears
   useEffect(() => {
-    if (allBranches.length > 0 && !allBranches.includes(branch)) {
-      onBranchChange(allBranches[0]);
+    if (branchFilter !== 'all' && allBranches.length > 0 && !allBranches.includes(branchFilter)) {
+      setBranchFilter('all');
     }
   }, [allBranches]);
 
@@ -69,11 +59,10 @@ export function Header({
       : 'bg-white border-gray-200 text-gray-700'
   );
 
-  // Derived: most recent commit for the selected branch (shown next to branch)
-  const { runs } = useReports();
-  const branchRuns = runs.filter((r) => r.branch === branch);
-  const latestCommit = branchRuns
-    .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())[0]?.commit;
+  // Latest commit from the currently filtered runs
+  const latestCommit = [...filteredRuns]
+    .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
+    .find((r) => r.commit)?.commit;
 
   return (
     <header
@@ -107,18 +96,19 @@ export function Header({
           </kbd>
         </button>
 
-        {/* Environment */}
-        <select value={environment} onChange={(e) => onEnvironmentChange(e.target.value)} className={selectClass}>
-          <option value="production">production</option>
-          <option value="staging">staging</option>
-          <option value="development">development</option>
+        {/* Source filter */}
+        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value as 'all' | 'gcs' | 'upload')} className={selectClass}>
+          <option value="all">All sources</option>
+          <option value="gcs">Argo</option>
+          <option value="upload">Manual Upload</option>
         </select>
 
-        {/* Branch selector — driven by actual runs */}
+        {/* Branch filter — driven by actual runs */}
         <div className="flex items-center gap-1 flex-shrink-0">
           <GitBranch className={clsx('w-3.5 h-3.5 flex-shrink-0', isDark ? 'text-gray-500' : 'text-gray-400')} />
-          <select value={branch} onChange={(e) => onBranchChange(e.target.value)} className={selectClass}>
-            {Array.from(new Set(['main', ...allBranches])).map((b) => (
+          <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} className={selectClass}>
+            <option value="all">All branches</option>
+            {allBranches.map((b) => (
               <option key={b} value={b}>{b}</option>
             ))}
           </select>

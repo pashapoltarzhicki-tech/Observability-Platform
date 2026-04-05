@@ -40,7 +40,14 @@ function threeMonthsAgo(): string {
 
 
 function jobDisplayName(jobName: string): string {
+  // Manually uploaded runs: "manually-my-name-2026-03-22-14-30" → "manually-my-name"
+  const uploadMatch = jobName.match(/^(manually-.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$/);
+  if (uploadMatch) return uploadMatch[1];
   return jobName;
+}
+
+function isManualUpload(jobName: string): boolean {
+  return /^manually-.+-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$/.test(jobName);
 }
 
 export async function loadGCSReports(
@@ -106,8 +113,7 @@ export async function loadGCSReports(
 
       const displayName = jobDisplayName(file.jobName);
       const run = parseReport(json, displayName, 'main', '');
-      // Enrich with GCS metadata
-      run.branch = 'main';
+      run.source = isManualUpload(file.jobName) ? 'upload' : 'gcs';
 
       const entry: CacheEntry = {
         path: file.path,
@@ -181,6 +187,7 @@ export async function refreshToday(
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: PlaywrightReport = await res.json();
       const run = parseReport(json, jobDisplayName(file.jobName), 'main', '');
+      run.source = isManualUpload(file.jobName) ? 'upload' : 'gcs';
       const entry: CacheEntry = { path: file.path, run, cachedAt: Date.now(), date: file.date, jobName: file.jobName };
       await cachePut(entry).catch(() => {});
       newRuns.push(run);

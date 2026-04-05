@@ -10,6 +10,8 @@ export interface UploadMeta {
   commit?: string;
 }
 
+export type SourceFilter = 'all' | 'gcs' | 'upload';
+
 interface ReportsContextValue {
   runs: ParsedRun[];
   filteredRuns: ParsedRun[];
@@ -28,6 +30,10 @@ interface ReportsContextValue {
   setDateFrom: (v: string) => void;
   dateTo: string;
   setDateTo: (v: string) => void;
+  sourceFilter: SourceFilter;
+  setSourceFilter: (v: SourceFilter) => void;
+  branchFilter: string;
+  setBranchFilter: (v: string) => void;
   // GCS sync
   gcsStatus: GCSStatus;
   refreshGCS: () => void;
@@ -51,6 +57,10 @@ const ReportsContext = createContext<ReportsContextValue>({
   setDateFrom: () => {},
   dateTo: '',
   setDateTo: () => {},
+  sourceFilter: 'gcs',
+  setSourceFilter: () => {},
+  branchFilter: 'all',
+  setBranchFilter: () => {},
   gcsStatus: { stage: 'idle' },
   refreshGCS: () => {},
 });
@@ -60,9 +70,11 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => new Date(Date.now() - 4 * 3600 * 1000).toISOString());
+  const [dateFrom, setDateFrom] = useState(() => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   const [dateTo, setDateTo] = useState(() => new Date().toISOString());
   const [gcsStatus, setGCSStatus] = useState<GCSStatus>({ stage: 'idle' });
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('gcs');
+  const [branchFilter, setBranchFilter] = useState<string>('all');
   const initialLoadDone = useRef(false);
   const isLoadingGCS = useRef(false);
 
@@ -91,8 +103,14 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
       if (!dateTo.includes('T')) to.setHours(23, 59, 59, 999);
       result = result.filter((r) => r.startTime <= to);
     }
+    if (sourceFilter !== 'all') {
+      result = result.filter((r) => (r.source ?? 'gcs') === sourceFilter);
+    }
+    if (branchFilter !== 'all') {
+      result = result.filter((r) => r.branch === branchFilter);
+    }
     return result;
-  }, [runs, dateFrom, dateTo]);
+  }, [runs, dateFrom, dateTo, sourceFilter, branchFilter]);
 
   // ── Dedup-safe run adder ───────────────────────────────────────────────────
   const addRuns = useCallback((newRuns: ParsedRun[]) => {
@@ -119,6 +137,16 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     runGCSLoad();
   }, [runGCSLoad]);
 
+  // ── Auto-refresh every 5 minutes ──────────────────────────────────────────
+  useEffect(() => {
+    const id = setInterval(() => {
+      refreshToday(addRuns, setGCSStatus).catch((err) => {
+        setGCSStatus({ stage: 'error', message: String(err) });
+      });
+    }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [addRuns]);
+
   // Refresh: today-only when up to date, full reload when in error
   const refreshGCS = useCallback(() => {
     if (gcsStatus.stage === 'error') {
@@ -141,6 +169,19 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         const text = await file.text();
         const json = JSON.parse(text) as PlaywrightReport;
         const run = parseReport(json, file.name, meta?.branch ?? 'main', meta?.commit ?? '');
+        run.source = 'upload';
+        setSourceFilter('upload');
+        // Expand date range if the run falls outside the current window
+        setDateFrom((prev) => {
+          const runTime = run.startTime.getTime();
+          const prevFrom = new Date(prev).getTime();
+          return runTime < prevFrom ? run.startTime.toISOString() : prev;
+        });
+        setDateTo((prev) => {
+          const runTime = run.startTime.getTime();
+          const prevTo = new Date(prev).getTime();
+          return runTime > prevTo ? run.startTime.toISOString() : prev;
+        });
         setRuns((prev) => {
           if (prev.some((r) => r.id === run.id)) return prev;
           return [...prev, run];
@@ -164,7 +205,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     setRuns([]);
     setErrors([]);
     setSelectedTags([]);
-    setDateFrom(new Date(Date.now() - 4 * 3600 * 1000).toISOString());
+    setDateFrom(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
     setDateTo(new Date().toISOString());
     await cacheClear().catch(() => {});
     setGCSStatus({ stage: 'idle' });
@@ -177,6 +218,8 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         loading, errors, allTags, allBranches,
         selectedTags, setSelectedTags,
         dateFrom, setDateFrom, dateTo, setDateTo,
+        sourceFilter, setSourceFilter,
+        branchFilter, setBranchFilter,
         gcsStatus, refreshGCS,
       }}
     >

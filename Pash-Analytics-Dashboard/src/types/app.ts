@@ -32,6 +32,7 @@ export interface ParsedRun {
   config: PlaywrightConfig;
   specs: FlatSpec[];
   projects: string[];
+  source: 'gcs' | 'upload';
 }
 
 export interface FlakyTest {
@@ -87,6 +88,7 @@ export interface RunSummary {
   flaky: number;
   skipped: number;
   passRate: number;
+  source: 'gcs' | 'upload';
 }
 
 export interface OverallStats {

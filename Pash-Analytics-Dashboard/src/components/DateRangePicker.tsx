@@ -35,10 +35,10 @@ const PRESETS = [
   { label: 'Last 15 minutes', from: () => minutesAgo(15), to: () => nowISO() },
   { label: 'Last 1 hour',     from: () => hoursAgo(1),    to: () => nowISO() },
   { label: 'Last 4 hours',    from: () => hoursAgo(4),    to: () => nowISO() },
-  { label: 'Last 1 day',      from: () => daysAgo(0),     to: () => today },
+  { label: 'Last 12 hours',   from: () => hoursAgo(12),   to: () => nowISO() },
+  { label: 'Last 1 day',      from: () => hoursAgo(24),   to: () => nowISO() },
   { label: 'Last 3 days',     from: () => daysAgo(2),     to: () => today },
   { label: 'Last 7 days',     from: () => daysAgo(6),     to: () => today },
-  { label: 'Last 30 days',    from: () => daysAgo(29),    to: () => today },
 ];
 
 function formatRange(from: string, to: string): string {
@@ -67,15 +67,16 @@ function formatRange(from: string, to: string): string {
 }
 
 function activePreset(from: string, to: string): string | null {
-  const datePresets = PRESETS.filter((p) => !from.includes('T') && p.label !== 'Last 15 minutes' && !p.label.includes('hour'));
-  for (const p of datePresets) {
-    if (from === p.from() && to === p.to()) return p.label;
-  }
-  if (from.includes('T')) {
-    for (const p of PRESETS.filter((p) => p.label.includes('minute') || p.label.includes('hour'))) {
+  for (const p of PRESETS) {
+    const isRelative = p.label.includes('minute') || p.label.includes('hour');
+    if (isRelative) {
+      if (!from.includes('T')) continue;
       const expected = new Date(p.from()).getTime();
       const actual   = new Date(from).getTime();
       if (Math.abs(expected - actual) < 10000) return p.label;
+    } else {
+      if (from.includes('T')) continue;
+      if (from === p.from() && to === p.to()) return p.label;
     }
   }
   return null;
@@ -172,21 +173,21 @@ export function DateRangePicker({ from, to, onFromChange, onToChange }: DateRang
                 <div>
                   <label className={clsx('block text-[10px] mb-1 font-medium px-2', isDark ? 'text-gray-400' : 'text-gray-500')}>From</label>
                   <input
-                    type="date"
-                    value={from.includes('T') ? today : from}
-                    max={to.includes('T') ? today : (to || today)}
-                    onChange={(e) => onFromChange(e.target.value)}
+                    type="datetime-local"
+                    value={from ? new Date(from).toISOString().slice(0, 16) : ''}
+                    max={new Date().toISOString().slice(0, 16)}
+                    onChange={(e) => onFromChange(e.target.value ? new Date(e.target.value).toISOString() : '')}
                     className={inputCls}
                   />
                 </div>
                 <div>
                   <label className={clsx('block text-[10px] mb-1 font-medium px-2', isDark ? 'text-gray-400' : 'text-gray-500')}>To</label>
                   <input
-                    type="date"
-                    value={to.includes('T') ? today : to}
-                    min={from.includes('T') ? undefined : (from || undefined)}
-                    max={today}
-                    onChange={(e) => { onToChange(e.target.value); }}
+                    type="datetime-local"
+                    value={to ? new Date(to).toISOString().slice(0, 16) : ''}
+                    min={from ? new Date(from).toISOString().slice(0, 16) : undefined}
+                    max={new Date().toISOString().slice(0, 16)}
+                    onChange={(e) => onToChange(e.target.value ? new Date(e.target.value).toISOString() : '')}
                     className={inputCls}
                   />
                 </div>

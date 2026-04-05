@@ -63,7 +63,7 @@ export function parseReport(json: PlaywrightReport, filename: string, branch = '
   const appVersion = meta?.appVersion || '';
   const versionMatch = appVersion.match(/^(.+)-([a-f0-9]{7,})$/);
   const resolvedBranch = meta?.branch || (versionMatch ? versionMatch[1] : branch);
-  const resolvedCommit = meta?.commit || (versionMatch ? versionMatch[2] : commit);
+  const resolvedCommit = meta?.commit || (versionMatch ? versionMatch[2] : appVersion || commit);
 
   return {
     id,

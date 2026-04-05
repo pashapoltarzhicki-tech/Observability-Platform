@@ -151,6 +151,7 @@ export function getRunsSummary(runs: ParsedRun[]): RunSummary[] {
         flaky,
         skipped,
         passRate,
+        source: run.source ?? 'gcs',
       };
     })
     .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
