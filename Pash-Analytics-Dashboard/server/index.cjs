@@ -106,6 +106,31 @@ function guessContentType(filePath) {
 }
 
 /**
+ * GET /api/gcs/list?prefix=<gcs-folder-prefix>
+ * Lists ALL files (any type) under a given prefix. Used to discover attachments.
+ */
+app.get('/api/gcs/list', async (req, res) => {
+  const prefix = req.query.prefix;
+  if (!prefix || prefix.includes('..') || prefix.startsWith('/')) {
+    return res.status(400).json({ error: 'Invalid prefix' });
+  }
+  try {
+    const [files] = await storage.bucket(BUCKET).getFiles({ prefix });
+    const result = files
+      .filter(f => !f.name.endsWith('/'))
+      .map(f => ({
+        path: f.name,
+        size: parseInt(f.metadata.size || '0'),
+        contentType: f.metadata.contentType,
+      }));
+    res.json(result);
+  } catch (err) {
+    console.error('list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/gcs/file?path=<gcs-object-path>
  * Downloads any file from the bucket with correct Content-Type.
  * Allows reports/ and workflow artifact prefixes (wizards/, snapshot/, etc.)

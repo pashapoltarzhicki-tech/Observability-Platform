@@ -34,6 +34,9 @@ interface ReportsContextValue {
   setSourceFilter: (v: SourceFilter) => void;
   branchFilter: string;
   setBranchFilter: (v: string) => void;
+  commitFilter: string;
+  setCommitFilter: (v: string) => void;
+  allCommits: string[];
   // GCS sync
   gcsStatus: GCSStatus;
   refreshGCS: () => void;
@@ -61,6 +64,9 @@ const ReportsContext = createContext<ReportsContextValue>({
   setSourceFilter: () => {},
   branchFilter: 'all',
   setBranchFilter: () => {},
+  commitFilter: 'all',
+  setCommitFilter: () => {},
+  allCommits: [],
   gcsStatus: { stage: 'idle' },
   refreshGCS: () => {},
 });
@@ -75,6 +81,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   const [gcsStatus, setGCSStatus] = useState<GCSStatus>({ stage: 'idle' });
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('gcs');
   const [branchFilter, setBranchFilter] = useState<string>('all');
+  const [commitFilter, setCommitFilter] = useState<string>('all');
   const initialLoadDone = useRef(false);
   const isLoadingGCS = useRef(false);
 
@@ -91,7 +98,8 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     return Array.from(branchSet).sort();
   }, [runs]);
 
-  const filteredRuns = useMemo(() => {
+  // Runs filtered by everything except commit — used to derive available commits
+  const preCommitRuns = useMemo(() => {
     let result = runs;
     if (dateFrom) {
       const from = new Date(dateFrom);
@@ -111,6 +119,20 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     }
     return result;
   }, [runs, dateFrom, dateTo, sourceFilter, branchFilter]);
+
+  const allCommits = useMemo(() => {
+    const seen = new Set<string>();
+    return preCommitRuns
+      .filter((r) => r.commit)
+      .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
+      .map((r) => r.commit!)
+      .filter((c) => { if (seen.has(c)) return false; seen.add(c); return true; });
+  }, [preCommitRuns]);
+
+  const filteredRuns = useMemo(() => {
+    if (commitFilter === 'all') return preCommitRuns;
+    return preCommitRuns.filter((r) => r.commit === commitFilter);
+  }, [preCommitRuns, commitFilter]);
 
   // ── Dedup-safe run adder ───────────────────────────────────────────────────
   const addRuns = useCallback((newRuns: ParsedRun[]) => {
@@ -220,6 +242,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         dateFrom, setDateFrom, dateTo, setDateTo,
         sourceFilter, setSourceFilter,
         branchFilter, setBranchFilter,
+        commitFilter, setCommitFilter, allCommits,
         gcsStatus, refreshGCS,
       }}
     >

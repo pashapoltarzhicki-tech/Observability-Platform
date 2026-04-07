@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { X, Upload, GitBranch, GitCommit, FileJson, Loader2, CheckCircle, AlertCircle, Tag } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { X, Upload, GitBranch, GitCommit, FileJson, Loader2, CheckCircle, AlertCircle, Tag, Plus } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useReports } from '../context/ReportsContext';
 import { clsx } from '../lib/clsx';
@@ -18,12 +18,15 @@ interface FileStatus {
   error?: string;
 }
 
-export function UploadModal({ files, onClose }: UploadModalProps) {
+export function UploadModal({ files: initialFiles, onClose }: UploadModalProps) {
   const { isDark } = useTheme();
   const { addRuns, allBranches, setDateFrom, setDateTo, setSourceFilter } = useReports();
 
+  const [files, setFiles] = useState<File[]>(initialFiles);
+  const addFileInputRef = useRef<HTMLInputElement>(null);
+
   const [names, setNames] = useState<Record<string, string>>(() =>
-    Object.fromEntries(files.map((f) => [f.name, '']))
+    Object.fromEntries(initialFiles.map((f) => [f.name, '']))
   );
   const [branch, setBranch] = useState('main');
   const [commit, setCommit] = useState('');
@@ -37,6 +40,30 @@ export function UploadModal({ files, onClose }: UploadModalProps) {
   const branches = Array.from(new Set(['main', 'develop', ...allBranches]));
 
   const anyNameEmpty = files.some((f) => !names[f.name]?.trim());
+
+  const removeFile = (name: string) => {
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.name !== name);
+      if (next.length === 0) onClose();
+      return next;
+    });
+    setNames((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    setStatuses((prev) => { const s = { ...prev }; delete s[name]; return s; });
+  };
+
+  const addMoreFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const added = Array.from(e.target.files ?? []);
+    if (!added.length) return;
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => f.name));
+      return [...prev, ...added.filter((f) => !existing.has(f.name))];
+    });
+    setNames((prev) => ({
+      ...prev,
+      ...Object.fromEntries(added.filter((f) => !(f.name in prev)).map((f) => [f.name, ''])),
+    }));
+    e.target.value = '';
+  };
 
   const handleUpload = async () => {
     setUploading(true);
@@ -56,7 +83,15 @@ export function UploadModal({ files, onClose }: UploadModalProps) {
 
       try {
         const text = await file.text();
-        const json = JSON.parse(text) as PlaywrightReport;
+        let json: PlaywrightReport;
+        try {
+          json = JSON.parse(text) as PlaywrightReport;
+        } catch {
+          throw new Error('Not a valid JSON file. Please upload a Playwright JSON report.');
+        }
+        if (!json.stats || !json.suites) {
+          throw new Error('Invalid Playwright report — missing stats or suites.');
+        }
 
         // Inject branch/commit so they survive the round-trip through GCS
         (json as any)._meta = {
@@ -144,7 +179,7 @@ export function UploadModal({ files, onClose }: UploadModalProps) {
             </div>
             <div>
               <h2 className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>
-                Upload Report{files.length > 1 ? 's' : ''}
+                Upload Report{files.length !== 1 ? 's' : ''}
               </h2>
               <p className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>
                 Saved to GCS · date read from report
@@ -161,34 +196,51 @@ export function UploadModal({ files, onClose }: UploadModalProps) {
         </div>
 
         <div className="px-5 py-4 space-y-4">
-          {/* File list with name inputs */}
+          {/* File list */}
           <div className="space-y-2">
-            <label className={clsx('flex items-center gap-1.5 text-xs font-medium', isDark ? 'text-gray-300' : 'text-gray-700')}>
-              <Tag className="w-3.5 h-3.5" />
-              Run name{files.length > 1 ? 's' : ''} <span className={clsx('font-normal', isDark ? 'text-gray-500' : 'text-gray-400')}>(required)</span>
-            </label>
+            <div className="flex items-center justify-between">
+              <span className={clsx('flex items-center gap-1.5 text-xs font-medium', isDark ? 'text-gray-300' : 'text-gray-700')}>
+                <Tag className="w-3.5 h-3.5" /> Files
+              </span>
+              {!uploading && (
+                <button
+                  onClick={() => addFileInputRef.current?.click()}
+                  className={clsx('flex items-center gap-1 text-xs transition-colors', isDark ? 'text-gray-500 hover:text-purple-400' : 'text-gray-400 hover:text-purple-600')}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add file
+                </button>
+              )}
+              <input ref={addFileInputRef} type="file" multiple accept=".json,application/json" className="hidden" onChange={addMoreFiles} />
+            </div>
 
             {files.map((f) => {
               const status = statuses[f.name];
               return (
-                <div key={f.name} className={clsx('rounded-xl p-3', isDark ? 'bg-gray-800' : 'bg-gray-50')}>
+                <div key={f.name} className={clsx('rounded-xl px-3 py-2.5', isDark ? 'bg-gray-800' : 'bg-gray-50')}>
+                  {/* File info row: icon + filename on left, size + X on right */}
                   <div className="flex items-center gap-2 mb-2">
                     <FileJson className={clsx('w-3.5 h-3.5 flex-shrink-0', isDark ? 'text-purple-400' : 'text-purple-600')} />
                     <span className={clsx('text-xs truncate flex-1', isDark ? 'text-gray-400' : 'text-gray-500')}>{f.name}</span>
-                    <span className={clsx('text-xs flex-shrink-0', isDark ? 'text-gray-500' : 'text-gray-400')}>
+                    <span className={clsx('text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded', isDark ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500')}>
                       {(f.size / 1024).toFixed(0)} KB
                     </span>
                     {status?.state === 'uploading' && <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin flex-shrink-0" />}
                     {status?.state === 'done' && <CheckCircle className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />}
                     {status?.state === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />}
+                    {!uploading && !status && (
+                      <button onClick={() => removeFile(f.name)} className={clsx('flex-shrink-0 transition-colors', isDark ? 'text-gray-600 hover:text-red-400' : 'text-gray-300 hover:text-red-500')}>
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
+                  {/* Run name input — directly below filename */}
                   <input
                     type="text"
                     value={names[f.name] ?? ''}
                     onChange={(e) => setNames((prev) => ({ ...prev, [f.name]: e.target.value }))}
-                    placeholder="e.g. smoke-test"
+                    placeholder="Run name (required)"
                     disabled={uploading}
-                    className={clsx(inputClass, 'disabled:opacity-60')}
+                    className={clsx(inputClass, 'text-xs py-1.5 disabled:opacity-60')}
                   />
                   {status?.state === 'error' && (
                     <p className="mt-1.5 text-xs text-red-400">{status.error}</p>

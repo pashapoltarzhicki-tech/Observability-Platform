@@ -4,7 +4,7 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { ArrowLeft, CheckCircle2, XCircle, AlertTriangle, Clock, Cpu, RefreshCw, ChevronDown, ChevronRight, ChevronUp, ChevronsUpDown, Sparkles, Image, Film, FileCode, CalendarDays, MinusCircle, Terminal } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, XCircle, AlertTriangle, Clock, Cpu, RefreshCw, ChevronDown, ChevronRight, ChevronUp, ChevronsUpDown, Sparkles, Image, Film, FileCode, CalendarDays, MinusCircle, Terminal, ExternalLink } from 'lucide-react';
 import { useReports } from '../context/ReportsContext';
 import { useTheme } from '../context/ThemeContext';
 import { getRunsSummary, getSpecFileSummaries, formatDuration } from '../lib/analytics';
@@ -18,6 +18,14 @@ type Tab = 'summary' | 'specs' | 'history' | 'configuration' | 'insights';
 type SpecSortKey = 'title' | 'tests' | 'passed' | 'failed' | 'skipped' | 'flaky' | 'status';
 type SpecSortDir = 'asc' | 'desc';
 
+function shortTestName(title: string): string {
+  const name = (title.split(' > ').pop() ?? title).trim();
+  const noTags = name.replace(/(\s*-?\s*@\S+)+$/, '').trim();
+  const parts = noTags.split(' - ');
+  const cutAt = parts.findIndex((p, i) => i > 0 && /^\d+$/.test(p.trim()));
+  return (cutAt > 0 ? parts.slice(0, cutAt) : parts).join(' - ');
+}
+
 
 function resolveAttachmentUrl(path: string | undefined, testResultsGCSPath: string): string | null {
   if (!path) return null;
@@ -26,11 +34,22 @@ function resolveAttachmentUrl(path: string | undefined, testResultsGCSPath: stri
     return `/api/gcs/proxy-url?url=${encodeURIComponent(path)}`;
   }
   if (!testResultsGCSPath) return null;
+  // Normalize backslashes (Windows paths)
+  const normalized = path.replace(/\\/g, '/');
+  // Strategy 1: look for "test-results/" marker — extract relative path after it
   const marker = 'test-results/';
-  const idx = path.indexOf(marker);
-  if (idx === -1) return null;
-  const relative = path.slice(idx + marker.length);
-  return `/api/gcs/file?path=${encodeURIComponent(`${testResultsGCSPath}/${relative}`)}`;
+  const idx = normalized.indexOf(marker);
+  if (idx !== -1) {
+    const relative = normalized.slice(idx + marker.length);
+    return `/api/gcs/file?path=${encodeURIComponent(`${testResultsGCSPath}/${relative}`)}`;
+  }
+  // Strategy 2: path is already relative (no absolute prefix) — use it directly
+  // under the GCS folder (parent of testResultsGCSPath)
+  if (!normalized.startsWith('/') && !normalized.includes(':')) {
+    const gcsFolder = testResultsGCSPath.replace(/\/test-results$/, '');
+    return `/api/gcs/file?path=${encodeURIComponent(`${gcsFolder}/${normalized}`)}`;
+  }
+  return null;
 }
 
 const sectionLabel = (isDark: boolean) =>
@@ -55,11 +74,23 @@ function AttachmentViewer({ attachments, stdout, stderr, testResultsGCSPath, isD
     .map((a) => ({ ...a, url: resolveAttachmentUrl(a.path, testResultsGCSPath) }))
     .filter((a) => a.url);
 
+  // All other attachments — any type not already shown above
+  const otherFiles = attachments
+    .filter((a) =>
+      a.name !== 'trace' &&
+      !a.contentType.startsWith('image/') &&
+      !a.contentType.startsWith('video/') &&
+      !a.contentType.includes('html') &&
+      !a.path?.endsWith('.html')
+    )
+    .map((a) => ({ ...a, url: resolveAttachmentUrl(a.path, testResultsGCSPath) }))
+    .filter((a) => a.url);
+
   const stdoutLines = (stdout ?? []).map((e) => e.text ?? '').filter(Boolean);
   const stderrLines = (stderr ?? []).map((e) => e.text ?? '').filter(Boolean);
   const hasLogs = stdoutLines.length > 0 || stderrLines.length > 0;
 
-  if (screenshots.length === 0 && videos.length === 0 && traces.length === 0 && htmlFiles.length === 0 && !hasLogs) return null;
+  if (screenshots.length === 0 && videos.length === 0 && traces.length === 0 && htmlFiles.length === 0 && otherFiles.length === 0 && !hasLogs) return null;
 
   return (
     <div className="mt-2 space-y-4">
@@ -154,6 +185,36 @@ function AttachmentViewer({ attachments, stdout, stderr, testResultsGCSPath, isD
                 Open trace {traces.length > 1 ? i + 1 : ''}
               </a>
             ))}
+          </div>
+        </div>
+      )}
+
+      {otherFiles.length > 0 && (
+        <div>
+          <p className={sectionLabel(isDark)}>
+            <FileCode className="w-3.5 h-3.5" /> Files
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {otherFiles.map((a, i) => {
+              return (
+                <a
+                  key={i}
+                  href={a.url!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download={a.name}
+                  className={clsx(
+                    'text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors flex items-center gap-1.5',
+                    isDark
+                      ? 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white'
+                      : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                  )}
+                >
+                  <FileCode className="w-3 h-3 flex-shrink-0" />
+                  {a.name}
+                </a>
+              );
+            })}
           </div>
         </div>
       )}
@@ -324,9 +385,7 @@ function TestResultRow({ result, title, projectName, testResultsGCSPath, isDark 
   const hasError = result.errors && result.errors.length > 0;
   const allAttachments = result.attachments ?? [];
   const hasAttachments = allAttachments.some(
-    (a) => resolveAttachmentUrl(a.path, testResultsGCSPath) !== null &&
-           (a.contentType.startsWith('image/') || a.contentType.startsWith('video/') || a.name === 'trace' ||
-            a.contentType.includes('html') || a.path?.endsWith('.html'))
+    (a) => resolveAttachmentUrl(a.path, testResultsGCSPath) !== null
   );
   const hasLogs = (result.stdout?.length ?? 0) > 0 || (result.stderr?.length ?? 0) > 0;
   const isExpandable = hasError || hasAttachments || hasLogs;
@@ -411,8 +470,8 @@ function SpecRow({ spec, testResultsGCSPath, specNameFilter }: { spec: FlatSpec;
       >
         <td className="px-4 py-3 flex items-center gap-2">
           {expanded ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-          <span className={clsx('text-xs font-mono truncate max-w-xs', isDark ? 'text-gray-300' : 'text-gray-700')}>
-            <HighlightMatch text={spec.title} query={specNameFilter} />
+          <span className={clsx('text-xs font-mono', isDark ? 'text-gray-300' : 'text-gray-700')}>
+            <HighlightMatch text={shortTestName(spec.title).replace(/ - /g, '-')} query={specNameFilter} />
           </span>
         </td>
         <td className={clsx('px-4 py-3 text-xs whitespace-nowrap', isDark ? 'text-gray-400' : 'text-gray-500')}>
@@ -533,11 +592,11 @@ function DateTimeInput({ label, value, onChange, min, max, isDark }: {
 }
 
 const HISTORY_PRESETS = [
+  { label: '12h', ms: 12 * 3600 * 1000 },
   { label: '1d',  ms: 86400 * 1000 },
+  { label: '2d',  ms: 2 * 86400 * 1000 },
   { label: '3d',  ms: 3 * 86400 * 1000 },
   { label: '7d',  ms: 7 * 86400 * 1000 },
-  { label: '14d', ms: 14 * 86400 * 1000 },
-  { label: '30d', ms: 30 * 86400 * 1000 },
 ];
 
 function HistoryRangePicker({ from, to, setFrom, setTo, isDark }: {
@@ -703,6 +762,7 @@ export function TestRunDetailPage() {
   const failed = stats.unexpected ?? 0;
   const flaky = stats.flaky ?? 0;
   const skipped = stats.skipped ?? 0;
+  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
   const pieData = [
     { name: 'Passed', value: passed, color: chartColors.passed },
@@ -801,55 +861,86 @@ export function TestRunDetailPage() {
       {/* Summary Tab */}
       {activeTab === 'summary' && (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {/* Pie chart */}
-            <div className={clsx('rounded-xl border p-5', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
-              <h3 className={clsx('text-sm font-semibold mb-4', isDark ? 'text-white' : 'text-gray-900')}>Test Results Distribution</h3>
-              <div className="flex items-center gap-4">
-                <ResponsiveContainer width={180} height={180}>
-                  <PieChart>
-                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={3} dataKey="value">
-                      {pieData.map((entry, index) => (
-                        <Cell key={index} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="space-y-2">
-                  {pieData.map((d) => (
-                    <div key={d.name} className="flex items-center gap-2">
-                      <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
-                      <span className={clsx('text-sm', isDark ? 'text-gray-300' : 'text-gray-600')}>{d.name}</span>
-                      <span className={clsx('text-sm font-bold ml-1', isDark ? 'text-white' : 'text-gray-900')}>{d.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Stats grid */}
+          <div className="grid grid-cols-1 gap-5">
+            {/* Single card: pie left, stats right */}
             <div className={clsx('rounded-xl border p-5', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
               <h3 className={clsx('text-sm font-semibold mb-4', isDark ? 'text-white' : 'text-gray-900')}>Run Statistics</h3>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="flex gap-6">
+                {/* Pie chart */}
+                <div className="flex-shrink-0">
+                  <ResponsiveContainer width={180} height={180}>
+                    <PieChart>
+                      <Pie data={pieData} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={3} dataKey="value">
+                        {pieData.map((entry, index) => (
+                          <Cell key={index} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                {/* Stats */}
+                <div className="flex-1 min-w-0">
+
+              {/* Pass rate bar */}
+              {total > 0 && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className={clsx('text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>Pass Rate</span>
+                    <span className={clsx('text-xs font-bold', passRate >= 90 ? 'text-green-400' : passRate >= 70 ? 'text-yellow-400' : 'text-red-400')}>
+                      {passRate}%
+                    </span>
+                  </div>
+                  <div className={clsx('w-full h-2 rounded-full overflow-hidden', isDark ? 'bg-gray-800' : 'bg-gray-100')}>
+                    <div className="h-full flex">
+                      {passed  > 0 && <div className="bg-green-500"  style={{ width: `${(passed  / total) * 100}%` }} />}
+                      {flaky   > 0 && <div className="bg-yellow-400" style={{ width: `${(flaky   / total) * 100}%` }} />}
+                      {failed  > 0 && <div className="bg-red-500"    style={{ width: `${(failed  / total) * 100}%` }} />}
+                      {skipped > 0 && <div className={isDark ? 'bg-gray-600' : 'bg-gray-300'} style={{ width: `${(skipped / total) * 100}%` }} />}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Test counts */}
+              <div className="grid grid-cols-4 gap-2 mb-3">
                 {[
-                  { label: 'Total Tests', value: total, icon: CheckCircle2 },
-                  { label: 'Passed', value: passed, icon: CheckCircle2 },
-                  { label: 'Failed', value: failed, icon: XCircle },
-                  { label: 'Flaky', value: flaky, icon: AlertTriangle },
-                  { label: 'Skipped', value: skipped, icon: RefreshCw },
-                  { label: 'Duration', value: formatDuration(run.duration), icon: Clock },
-                  { label: 'Workers', value: run.config.workers ?? '—', icon: Cpu },
-                  { label: 'Retries', value: run.config.projects?.[0]?.retries ?? 0, icon: RefreshCw },
-                ].map(({ label, value }) => (
-                  <div key={label} className={clsx('rounded-lg p-3', isDark ? 'bg-gray-800' : 'bg-gray-50')}>
-                    <p className={clsx('text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>{label}</p>
-                    <p className={clsx('text-lg font-bold mt-0.5', isDark ? 'text-white' : 'text-gray-900')}>{value}</p>
+                  { label: 'Total',  value: total,  color: isDark ? 'text-white' : 'text-gray-900',  bg: isDark ? 'bg-gray-800' : 'bg-gray-50',           Icon: CheckCircle2 },
+                  { label: 'Passed', value: passed, color: 'text-green-400',                          bg: isDark ? 'bg-green-500/10' : 'bg-green-50',       Icon: CheckCircle2 },
+                  { label: 'Failed', value: failed, color: failed > 0 ? 'text-red-400'    : isDark ? 'text-gray-500' : 'text-gray-400', bg: failed > 0 ? isDark ? 'bg-red-500/10'    : 'bg-red-50'    : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: XCircle },
+                  { label: 'Flaky',  value: flaky,  color: flaky  > 0 ? 'text-yellow-400' : isDark ? 'text-gray-500' : 'text-gray-400', bg: flaky  > 0 ? isDark ? 'bg-yellow-500/10' : 'bg-yellow-50' : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: AlertTriangle },
+                ].map(({ label, value, color, bg, Icon }) => (
+                  <div key={label} className={clsx('rounded-lg p-3 flex flex-col gap-1', bg)}>
+                    <div className="flex items-center gap-1">
+                      <Icon className={clsx('w-3 h-3', color)} />
+                      <span className={clsx('text-[10px]', isDark ? 'text-gray-400' : 'text-gray-500')}>{label}</span>
+                    </div>
+                    <p className={clsx('text-xl font-bold leading-none', color)}>{value}</p>
                   </div>
                 ))}
               </div>
+
+              {/* Run meta */}
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: 'Skipped',  value: skipped,                                Icon: MinusCircle },
+                  { label: 'Duration', value: formatDuration(run.duration),            Icon: Clock },
+                  { label: 'Workers',  value: run.config.workers ?? '—',               Icon: Cpu },
+                  { label: 'Retries',  value: run.config.projects?.[0]?.retries ?? 0,  Icon: RefreshCw },
+                ].map(({ label, value, Icon }) => (
+                  <div key={label} className={clsx('rounded-lg p-3 flex flex-col gap-1', isDark ? 'bg-gray-800' : 'bg-gray-50')}>
+                    <div className="flex items-center gap-1">
+                      <Icon className={clsx('w-3 h-3', isDark ? 'text-gray-500' : 'text-gray-400')} />
+                      <span className={clsx('text-[10px]', isDark ? 'text-gray-400' : 'text-gray-500')}>{label}</span>
+                    </div>
+                    <p className={clsx('text-xl font-bold leading-none', isDark ? 'text-gray-200' : 'text-gray-800')}>{value}</p>
+                  </div>
+                ))}
+                </div>
+              </div>
             </div>
           </div>
+        </div>
         </div>
       )}
 
@@ -876,6 +967,23 @@ export function TestRunDetailPage() {
                 </button>
               </div>
             )}
+            {(() => {
+              const gcsFolder = run.testResultsGCSPath ? run.testResultsGCSPath.replace(/\/test-results$/, '') : null;
+              const playwrightUrl = gcsFolder ? `https://storage.cloud.google.com/argo-test-result-20251027/${gcsFolder}/playwright-report/index.html` : null;
+              return playwrightUrl ? (
+                <div className={clsx('flex items-center justify-end px-4 py-2 border-b', isDark ? 'border-gray-800' : 'border-gray-100')}>
+                  <a
+                    href={playwrightUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-[10px] text-purple-400 hover:text-purple-300 transition-colors whitespace-nowrap"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Playwright Report
+                  </a>
+                </div>
+              ) : null;
+            })()}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>

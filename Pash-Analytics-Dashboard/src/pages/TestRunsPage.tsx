@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Clock, Upload as UploadIcon, ChevronUp, ChevronDown, ChevronsUpDown, Search, X } from 'lucide-react';
+import { Upload as UploadIcon, Clock, ChevronUp, ChevronDown, ChevronsUpDown, Search, X } from 'lucide-react';
 import { useReports } from '../context/ReportsContext';
 import { useTheme } from '../context/ThemeContext';
 import { getRunsSummary, formatDuration } from '../lib/analytics';
@@ -10,6 +10,11 @@ import { useDropzone } from 'react-dropzone';
 import { RunSummary } from '../types/app';
 
 type SortKey = 'filename' | 'branch' | 'status' | 'duration' | 'passed' | 'failed' | 'flaky' | 'startTime';
+
+// Strip trailing Argo cron timestamp: "snapshot-binder-cron-1768151100" → "snapshot-binder-cron"
+function workflowBaseName(name: string): string {
+  return name.replace(/-\d{8,}$/, '');
+}
 type SortDir = 'asc' | 'desc';
 
 function StatusBadge({ passed, failed }: { passed: number; failed: number; total: number }) {
@@ -59,34 +64,25 @@ function runStatus(r: RunSummary): string {
   return r.failed === 0 ? 'passed' : r.passed === 0 ? 'failed' : 'partial';
 }
 
-const SOURCE_OPTIONS = [
-  { value: 'gcs',    label: 'Argo'     },
-  { value: 'upload', label: 'Manually' },
-];
 
 export function TestRunsPage() {
   const { filteredRuns: runs, addFiles } = useReports();
   const { isDark } = useTheme();
   const navigate = useNavigate();
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sortKey, setSortKey] = useState<SortKey>('startTime');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [search, setSearch] = useState('');
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
-  const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [selectedWorkflows, setSelectedWorkflows] = useState<string[]>([]);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
-  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
   const [workflowSearch, setWorkflowSearch] = useState('');
   const statusMenuRef = useRef<HTMLDivElement>(null);
-  const sourceMenuRef = useRef<HTMLDivElement>(null);
   const workflowMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (statusMenuRef.current && !statusMenuRef.current.contains(e.target as Node)) setStatusMenuOpen(false);
-      if (sourceMenuRef.current && !sourceMenuRef.current.contains(e.target as Node)) setSourceMenuOpen(false);
       if (workflowMenuRef.current && !workflowMenuRef.current.contains(e.target as Node)) { setWorkflowMenuOpen(false); setWorkflowSearch(''); }
     };
     document.addEventListener('mousedown', handler);
@@ -96,7 +92,7 @@ export function TestRunsPage() {
   const rawSummaries = getRunsSummary(runs);
 
   const allWorkflowNames = useMemo(() =>
-    Array.from(new Set(rawSummaries.map((r) => r.filename))).sort(),
+    Array.from(new Set(rawSummaries.map((r) => workflowBaseName(r.filename)))).sort(),
     [rawSummaries]
   );
 
@@ -109,20 +105,15 @@ export function TestRunsPage() {
     let result = rawSummaries;
     if (search) result = result.filter((r) => r.filename.toLowerCase().includes(search.toLowerCase()) || r.branch.toLowerCase().includes(search.toLowerCase()));
     if (selectedStatuses.length > 0) result = result.filter((r) => selectedStatuses.includes(runStatus(r)));
-    if (selectedSources.length > 0) result = result.filter((r) => selectedSources.includes(r.source ?? 'gcs'));
-    if (selectedWorkflows.length > 0) result = result.filter((r) => selectedWorkflows.includes(r.filename));
+    if (selectedWorkflows.length > 0) result = result.filter((r) => selectedWorkflows.includes(workflowBaseName(r.filename)));
     return sortSummaries(result, sortKey, sortDir);
-  }, [rawSummaries, search, selectedStatuses, selectedSources, selectedWorkflows, sortKey, sortDir]);
+  }, [rawSummaries, search, selectedStatuses, selectedWorkflows, sortKey, sortDir]);
 
   const handleSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('desc'); }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length > 0) { addFiles(files); e.target.value = ''; }
-  };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { 'application/json': ['.json'] },
@@ -179,71 +170,18 @@ export function TestRunsPage() {
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2">
         {/* Search */}
-        <div className="relative">
-          <Search className={clsx('absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5', isDark ? 'text-gray-500' : 'text-gray-400')} />
+        <div className="relative flex-1 min-w-0">
+          <Search className={clsx('absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5', isDark ? 'text-gray-500' : 'text-gray-400')} />
           <input
             type="text"
-            placeholder="Search workflows..."
+            placeholder="Search workflows…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className={clsx(selectBase, 'pl-7 w-52 outline-none focus:ring-1 focus:ring-purple-500')}
-          />
-        </div>
-
-        {/* Source filter */}
-        <div className="relative" ref={sourceMenuRef}>
-          <button
-            onClick={() => setSourceMenuOpen((v) => !v)}
             className={clsx(
-              'flex items-center gap-1.5 text-xs rounded-lg px-2.5 py-1.5 border transition-colors',
-              sourceMenuOpen || selectedSources.length > 0
-                ? 'border-purple-500 bg-purple-600/10 text-purple-400'
-                : isDark ? 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+              'w-full text-xs rounded-xl pl-8 pr-3 py-2 border outline-none focus:ring-1 focus:ring-purple-500 transition-colors',
+              isDark ? 'bg-gray-800 border-gray-700 text-gray-200 placeholder-gray-500 focus:border-purple-500' : 'bg-white border-gray-200 text-gray-700 placeholder-gray-400 focus:border-purple-400'
             )}
-          >
-            <span>
-              {selectedSources.length === 0
-                ? 'All Sources'
-                : selectedSources.length === 1
-                ? SOURCE_OPTIONS.find((o) => o.value === selectedSources[0])?.label
-                : `${selectedSources.length} sources`}
-            </span>
-            {selectedSources.length > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); setSelectedSources([]); }} className="hover:text-red-400 transition-colors">
-                <X className="w-3 h-3" />
-              </button>
-            )}
-            <ChevronDown className={clsx('w-3 h-3 transition-transform', sourceMenuOpen && 'rotate-180')} />
-          </button>
-          {sourceMenuOpen && (
-            <div className={clsx('absolute left-0 top-full mt-1.5 w-40 rounded-xl border shadow-xl z-50', isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200')}>
-              <div className={clsx('flex items-center justify-between px-3 py-2 border-b text-xs font-medium', isDark ? 'border-gray-800 text-gray-400' : 'border-gray-100 text-gray-500')}>
-                <span>Source</span>
-                {selectedSources.length > 0 && (
-                  <button onClick={() => setSelectedSources([])} className="flex items-center gap-0.5 hover:text-red-400 transition-colors">
-                    <X className="w-3 h-3" /> Clear
-                  </button>
-                )}
-              </div>
-              <div className="py-1">
-                {SOURCE_OPTIONS.map(({ value, label }) => {
-                  const active = selectedSources.includes(value);
-                  return (
-                    <button
-                      key={value}
-                      onClick={() => setSelectedSources((prev) => prev.includes(value) ? prev.filter((s) => s !== value) : [...prev, value])}
-                      className={clsx('w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors', isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-50')}
-                    >
-                      <span className={clsx('w-3.5 h-3.5 rounded flex-shrink-0 border flex items-center justify-center transition-colors', active ? 'bg-purple-600 border-purple-600' : isDark ? 'border-gray-600' : 'border-gray-300')}>
-                        {active && <svg viewBox="0 0 10 8" className="w-2 h-2 text-white" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4l3 3 5-6" /></svg>}
-                      </span>
-                      <span className={isDark ? 'text-gray-300' : 'text-gray-700'}>{label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          />
         </div>
 
         {/* Workflow multi-select */}
@@ -261,7 +199,7 @@ export function TestRunsPage() {
               {selectedWorkflows.length === 0
                 ? 'Workflow'
                 : selectedWorkflows.length === 1
-                ? selectedWorkflows[0].split('/').pop() ?? selectedWorkflows[0]
+                ? selectedWorkflows[0]
                 : `${selectedWorkflows.length} workflows`}
             </span>
             {selectedWorkflows.length > 0 && (
@@ -281,6 +219,7 @@ export function TestRunsPage() {
                     placeholder="Search workflows..."
                     value={workflowSearch}
                     onChange={(e) => setWorkflowSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { setWorkflowMenuOpen(false); setWorkflowSearch(''); } }}
                     className={clsx('w-full text-xs pl-6 pr-2 py-1 rounded-md border outline-none', isDark ? 'bg-gray-800 border-gray-700 text-gray-200' : 'bg-gray-50 border-gray-200 text-gray-700')}
                     autoFocus
                   />
@@ -294,27 +233,16 @@ export function TestRunsPage() {
               <div className="max-h-56 overflow-y-auto py-1">
                 {/* All option */}
                 {(() => {
-                  const allVisibleSelected = filteredWorkflowOptions.length > 0 && filteredWorkflowOptions.every((n) => selectedWorkflows.includes(n));
-                  const allChecked = workflowSearch ? allVisibleSelected : selectedWorkflows.length === 0;
-                  const handleAll = () => {
-                    if (workflowSearch) {
-                      // select all currently visible (filtered) workflows
-                      setSelectedWorkflows((prev) => Array.from(new Set([...prev, ...filteredWorkflowOptions])));
-                    } else {
-                      setSelectedWorkflows([]);
-                    }
-                  };
+                  const allChecked = !workflowSearch && selectedWorkflows.length === 0;
                   return (
                     <button
-                      onClick={handleAll}
+                      onClick={() => { setSelectedWorkflows([]); setWorkflowSearch(''); }}
                       className={clsx('w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors text-left', isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-50')}
                     >
                       <span className={clsx('w-3.5 h-3.5 rounded flex-shrink-0 border flex items-center justify-center transition-colors', allChecked ? 'bg-purple-600 border-purple-600' : isDark ? 'border-gray-600' : 'border-gray-300')}>
                         {allChecked && <svg viewBox="0 0 10 8" className="w-2 h-2 text-white" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4l3 3 5-6" /></svg>}
                       </span>
-                      <span className={clsx('font-medium', isDark ? 'text-gray-200' : 'text-gray-700')}>
-                        {workflowSearch ? `All ${filteredWorkflowOptions.length} matching` : 'All workflows'}
-                      </span>
+                      <span className={clsx('font-medium', isDark ? 'text-gray-200' : 'text-gray-700')}>All workflows</span>
                     </button>
                   );
                 })()}
@@ -324,9 +252,13 @@ export function TestRunsPage() {
                     const aA = selectedWorkflows.includes(a), bA = selectedWorkflows.includes(b);
                     if (aA && !bA) return -1; if (!aA && bA) return 1; return 0;
                   }).map((name) => {
-                    const active = selectedWorkflows.includes(name) || (!workflowSearch && selectedWorkflows.length === 0);
+                    const active = selectedWorkflows.includes(name);
                     return (
-                      <button key={name} onClick={() => setSelectedWorkflows((prev) => prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name])} className={clsx('w-full flex items-start gap-2.5 px-3 py-2 text-xs transition-colors text-left', isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-50')}>
+                      <button
+                        key={name}
+                        onClick={() => setSelectedWorkflows((prev) => prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name])}
+                        className={clsx('w-full flex items-start gap-2.5 px-3 py-2 text-xs transition-colors text-left', isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-50')}
+                      >
                         <span className={clsx('mt-0.5 w-3.5 h-3.5 rounded flex-shrink-0 border flex items-center justify-center transition-colors', active ? 'bg-purple-600 border-purple-600' : isDark ? 'border-gray-600' : 'border-gray-300')}>
                           {active && <svg viewBox="0 0 10 8" className="w-2 h-2 text-white" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4l3 3 5-6" /></svg>}
                         </span>
@@ -399,14 +331,6 @@ export function TestRunsPage() {
         <p className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>
           {summaries.length} run{summaries.length !== 1 ? 's' : ''}
         </p>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors"
-        >
-          <Upload className="w-4 h-4" />
-          Upload
-        </button>
-        <input ref={fileInputRef} type="file" multiple accept=".json" className="hidden" onChange={handleFileChange} />
       </div>
 
       <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
@@ -415,16 +339,15 @@ export function TestRunsPage() {
             <thead>
               <tr className={clsx('text-xs font-medium', isDark ? 'text-gray-400 bg-gray-800/50' : 'text-gray-500 bg-gray-50')}>
                 <th className="text-left px-4 py-3">Source</th>
-                {columns.map(({ label, key }) => (
+                {columns.map(({ label, key }) => [
                   <th key={key} className={thClass(key)} onClick={() => handleSort(key)}>
                     <span className="flex items-center gap-1">
                       {label}
                       <SortIcon col={key} sortKey={sortKey} sortDir={sortDir} />
                     </span>
-                  </th>
-                ))}
-                <th className="text-left px-4 py-3">Commit</th>
-                <th className="text-left px-4 py-3">Environment</th>
+                  </th>,
+                  key === 'branch' && <th key="commit-h" className="text-left px-4 py-3 whitespace-nowrap">Commit</th>,
+                ])}
               </tr>
             </thead>
             <tbody>
@@ -449,12 +372,17 @@ export function TestRunsPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3 max-w-[280px]">
-                    <span className={clsx('text-xs font-medium', isDark ? 'text-gray-200' : 'text-gray-700')}>
+                  <td className="px-4 py-3">
+                    <span className={clsx('text-xs font-medium whitespace-nowrap', isDark ? 'text-gray-200' : 'text-gray-700')}>
                       {r.filename}
                     </span>
                   </td>
-                  <td className={clsx('px-4 py-3 text-xs', isDark ? 'text-gray-300' : 'text-gray-600')}>{r.branch || '—'}</td>
+                  <td className={clsx('px-4 py-3 text-xs whitespace-nowrap', isDark ? 'text-gray-300' : 'text-gray-600')}>{r.branch || '—'}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className={clsx('font-mono text-xs', isDark ? 'text-purple-400' : 'text-purple-600')}>
+                      {r.commit ? r.commit.slice(0, 7) : '—'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <StatusBadge passed={r.passed} failed={r.failed} total={r.total} />
                   </td>
@@ -482,16 +410,8 @@ export function TestRunsPage() {
                       {r.flaky}
                     </span>
                   </td>
-                  <td className={clsx('px-4 py-3 text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>
+                  <td className={clsx('px-4 py-3 text-xs whitespace-nowrap', isDark ? 'text-gray-400' : 'text-gray-500')}>
                     {format(r.startTime, 'MMM d, yyyy HH:mm')}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={clsx('font-mono text-xs', isDark ? 'text-purple-400' : 'text-purple-600')}>
-                      {r.commit ? r.commit.slice(0, 7) : '—'}
-                    </span>
-                  </td>
-                  <td className={clsx('px-4 py-3 text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>
-                    {r.env || '—'}
                   </td>
                 </tr>
               ))}

@@ -9,7 +9,6 @@ import { TestCasesPage } from './pages/TestCasesPage';
 import { TestsPage } from './pages/TestsPage';
 import { FlakyTestsPage } from './pages/FlakyTestsPage';
 import { HistoryPage } from './pages/HistoryPage';
-import { AnalyticsPage } from './pages/AnalyticsPage';
 import { PullRequestsPage } from './pages/PullRequestsPage';
 import { IntegrationsPage } from './pages/IntegrationsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -29,7 +28,6 @@ export function App() {
               <Route path="/tests" element={<TestsPage />} />
               <Route path="/flaky-tests" element={<FlakyTestsPage />} />
               <Route path="/history" element={<HistoryPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/pull-requests" element={<PullRequestsPage />} />
               <Route path="/integrations" element={<IntegrationsPage />} />
               <Route path="/settings" element={<SettingsPage />} />

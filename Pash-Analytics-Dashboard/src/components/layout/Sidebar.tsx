@@ -7,7 +7,6 @@ import {
   TestTube2,
   AlertTriangle,
   History,
-  BarChart3,
   GitCompare,
   Plug,
   Settings,
@@ -31,7 +30,6 @@ const navItems = [
   { path: '/tests', label: 'Tests', icon: TestTube2 },
   { path: '/flaky-tests', label: 'Flaky Tests', icon: AlertTriangle },
   { path: '/history', label: 'History', icon: History },
-  { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/compare', label: 'Compare', icon: GitCompare },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

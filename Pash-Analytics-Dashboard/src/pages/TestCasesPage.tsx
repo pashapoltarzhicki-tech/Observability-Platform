@@ -27,7 +27,7 @@ interface WorkflowStats {
   runs: ParsedRun[];
 }
 
-type SortKey = 'filename' | 'totalRuns' | 'lastRunDate' | 'avgPassRate' | 'totalFailed' | 'totalFlaky' | 'totalSkipped' | 'avgDuration' | 'totalTests';
+type SortKey = 'filename' | 'totalRuns' | 'lastRunDate' | 'avgPassRate' | 'totalFailed' | 'totalFlaky' | 'totalSkipped' | 'avgDuration' | 'totalTests' | 'lastRunStatus' | 'trend';
 type SortDir = 'asc' | 'desc';
 
 function stripTimestamp(filename: string): string {
@@ -128,6 +128,7 @@ function TrendIcon({ trend }: { trend: 'up' | 'down' | 'stable' }) {
   return <Minus className="w-4 h-4 text-gray-400" />;
 }
 
+
 // Icon header cell with tooltip
 function IconTh({ icon, label, sortCol, sortKey, sortDir, onSort, className }: {
   icon: React.ReactNode;
@@ -170,8 +171,7 @@ export function TestCasesPage() {
   const allStats = useMemo(() => buildWorkflowStats(runs), [runs]);
 
   const filtered = useMemo(() => {
-    let result = allStats;
-    if (search) result = result.filter((w) => w.filename.toLowerCase().includes(search.toLowerCase()));
+    let result = search ? allStats.filter((w) => w.filename.toLowerCase().includes(search.toLowerCase())) : allStats;
     return [...result].sort((a, b) => {
       let cmp = 0;
       if (sortKey === 'filename') cmp = a.filename.localeCompare(b.filename);
@@ -183,6 +183,14 @@ export function TestCasesPage() {
       else if (sortKey === 'totalFlaky') cmp = a.totalFlaky - b.totalFlaky;
       else if (sortKey === 'totalSkipped') cmp = a.totalSkipped - b.totalSkipped;
       else if (sortKey === 'avgDuration') cmp = a.avgDuration - b.avgDuration;
+      else if (sortKey === 'lastRunStatus') {
+        const rank = (s: string) => s === 'passed' ? 0 : s === 'partial' ? 1 : 2;
+        cmp = rank(a.lastRunStatus) - rank(b.lastRunStatus);
+      }
+      else if (sortKey === 'trend') {
+        const rank = (t: string) => t === 'up' ? 0 : t === 'stable' ? 1 : 2;
+        cmp = rank(a.trend) - rank(b.trend);
+      }
       return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [allStats, search, sortKey, sortDir]);
@@ -219,53 +227,54 @@ export function TestCasesPage() {
 
   return (
     <div className="space-y-4">
-      {/* Filter bar */}
-      <div className="flex items-center gap-2">
-        <div className="relative">
-          <Search className={clsx('absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5', isDark ? 'text-gray-500' : 'text-gray-400')} />
-          <input
-            type="text"
-            placeholder="Search workflows..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className={clsx(inputClass, 'pl-7 w-60')}
-          />
-        </div>
-        {search && (
-          <button onClick={() => setSearch('')} className={clsx('p-1 rounded hover:text-red-400 transition-colors', isDark ? 'text-gray-500' : 'text-gray-400')}>
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
-        <span className={clsx('ml-auto text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>
-          {filtered.length} workflow{filtered.length !== 1 ? 's' : ''}
-        </span>
-      </div>
-
       {/* Table */}
       <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[800px]">
             <thead>
               <tr className={clsx('text-xs font-medium', isDark ? 'text-gray-400 bg-gray-800/50' : 'text-gray-500 bg-gray-50')}>
-                {/* Workflow name */}
-                <th
-                  title="Workflow"
-                  onClick={() => handleSort('filename')}
-                  className={clsx(thBase, 'px-4 py-3 cursor-pointer hover:text-purple-500 transition-colors whitespace-nowrap', sortKey === 'filename' && 'text-purple-400')}
-                >
-                  <span className="flex items-center gap-1">Workflow <SortIcon col="filename" sortKey={sortKey} sortDir={sortDir} /></span>
+                {/* Workflow name + search below */}
+                <th className={clsx(thBase, 'px-4 py-2')}>
+                  <button
+                    onClick={() => handleSort('filename')}
+                    className={clsx('flex items-center gap-1 cursor-pointer hover:text-purple-500 transition-colors whitespace-nowrap mb-1', sortKey === 'filename' && 'text-purple-400')}
+                  >
+                    Workflow <SortIcon col="filename" sortKey={sortKey} sortDir={sortDir} />
+                  </button>
+                  <div className="relative flex items-center">
+                    <Search className={clsx('w-3 h-3 flex-shrink-0', isDark ? 'text-gray-600' : 'text-gray-400')} />
+                    <input
+                      type="text"
+                      placeholder="Search…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      className={clsx(
+                        'text-[11px] pl-1 pr-4 py-px border-0 outline-none transition-colors font-normal bg-transparent w-full',
+                        isDark ? 'text-gray-300 placeholder-gray-600' : 'text-gray-600 placeholder-gray-400'
+                      )}
+                    />
+                    {search && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSearch(''); }}
+                        className={clsx('absolute right-0 transition-colors', isDark ? 'text-gray-500 hover:text-red-400' : 'text-gray-400 hover:text-red-500')}
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </div>
                 </th>
 
                 {[
-                  { label: 'Status',    key: null            },
-                  { label: 'Runs',      key: 'totalRuns'    },
-                  { label: 'Tests',     key: 'totalTests'   },
-                  { label: 'Failed',    key: 'totalFailed'  },
-                  { label: 'Flaky',     key: 'totalFlaky'   },
-                  { label: 'Skipped',   key: 'totalSkipped' },
-                  { label: 'Trend',     key: null            },
-                  { label: 'Avg Duration', key: 'avgDuration'  },
-                  { label: 'Last Run',  key: 'lastRunDate'  },
+                  { label: 'Status',       key: 'lastRunStatus' },
+                  { label: 'Runs',         key: 'totalRuns'     },
+                  { label: 'Tests',        key: 'totalTests'    },
+                  { label: 'Failed',       key: 'totalFailed'   },
+                  { label: 'Flaky',        key: 'totalFlaky'    },
+                  { label: 'Skipped',      key: 'totalSkipped'  },
+                  { label: 'Trend',        key: 'trend'         },
+                  { label: 'Avg Duration', key: 'avgDuration'   },
+                  { label: 'Last Run',     key: 'lastRunDate'   },
                 ].map(({ label, key }) => (
                   <th
                     key={label}

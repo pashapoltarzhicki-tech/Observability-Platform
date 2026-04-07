@@ -241,29 +241,30 @@ export function getSpecFileSummaries(run: ParsedRun): SpecFileSummary[] {
 }
 
 export function getTagStats(runs: ParsedRun[]): TagStat[] {
-  const tagMap = new Map<string, number>();
+  const tagTests = new Map<string, Set<string>>();
 
   for (const run of runs) {
     for (const spec of run.specs) {
       for (const tag of spec.tags) {
-        tagMap.set(tag, (tagMap.get(tag) ?? 0) + 1);
+        if (!tagTests.has(tag)) tagTests.set(tag, new Set());
+        tagTests.get(tag)!.add(spec.fullTitle);
       }
     }
   }
 
-  return Array.from(tagMap.entries())
-    .map(([tag, count]) => ({ tag, count }))
+  return Array.from(tagTests.entries())
+    .map(([tag, tests]) => ({ tag, count: tests.size }))
     .sort((a, b) => b.count - a.count);
 }
 
 export function getMostFailingTests(runs: ParsedRun[]) {
-  const testMap = new Map<string, { title: string; file: string; total: number; failed: number }>();
+  const testMap = new Map<string, { title: string; file: string; suitePath: string[]; total: number; failed: number }>();
 
   for (const run of runs) {
     for (const spec of run.specs) {
       const key = spec.fullTitle + '||' + spec.file;
       if (!testMap.has(key)) {
-        testMap.set(key, { title: spec.title, file: spec.file, total: 0, failed: 0 });
+        testMap.set(key, { title: spec.title, file: spec.file, suitePath: spec.suitePath, total: 0, failed: 0 });
       }
       const entry = testMap.get(key)!;
       for (const test of spec.tests) {

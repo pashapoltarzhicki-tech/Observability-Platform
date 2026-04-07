@@ -50,6 +50,12 @@ function isManualUpload(jobName: string): boolean {
   return /^manually-.+-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$/.test(jobName);
 }
 
+// Derive the test-results GCS folder from the report file path.
+// e.g. "reports/2026/03/11/job-name/results.json" → "reports/2026/03/11/job-name/test-results"
+function deriveTestResultsPath(filePath: string): string {
+  return filePath.replace(/\/[^/]+$/, '') + '/test-results';
+}
+
 export async function loadGCSReports(
   onRunsLoaded: (runs: ParsedRun[]) => void,
   onStatus: (s: GCSStatus) => void,
@@ -65,7 +71,10 @@ export async function loadGCSReports(
     // Only show entries within the 3-month window
     const recent = cached.filter(e => e.date >= cutoff);
     if (recent.length > 0) {
-      onRunsLoaded(recent.map(e => e.run));
+      onRunsLoaded(recent.map(e => {
+        if (!e.run.testResultsGCSPath) e.run.testResultsGCSPath = deriveTestResultsPath(e.path);
+        return e.run;
+      }));
     }
   } catch {
     // IndexedDB unavailable (private browsing etc.) — proceed without cache
@@ -114,6 +123,7 @@ export async function loadGCSReports(
       const displayName = jobDisplayName(file.jobName);
       const run = parseReport(json, displayName, 'main', '');
       run.source = isManualUpload(file.jobName) ? 'upload' : 'gcs';
+      if (!run.testResultsGCSPath) run.testResultsGCSPath = deriveTestResultsPath(file.path);
 
       const entry: CacheEntry = {
         path: file.path,
@@ -188,6 +198,7 @@ export async function refreshToday(
       const json: PlaywrightReport = await res.json();
       const run = parseReport(json, jobDisplayName(file.jobName), 'main', '');
       run.source = isManualUpload(file.jobName) ? 'upload' : 'gcs';
+      if (!run.testResultsGCSPath) run.testResultsGCSPath = deriveTestResultsPath(file.path);
       const entry: CacheEntry = { path: file.path, run, cachedAt: Date.now(), date: file.date, jobName: file.jobName };
       await cachePut(entry).catch(() => {});
       newRuns.push(run);

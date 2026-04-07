@@ -1,18 +1,20 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
-  LineChart, Line, BarChart, Bar, AreaChart, Area,
+  LineChart, Line, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
   PlayCircle, CheckCircle2, AlertTriangle, Clock,
-  TrendingUp, TrendingDown, Upload, FlaskConical,
+  TrendingUp, TrendingDown, Upload, FlaskConical, Folder, FileText, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { useReports } from '../context/ReportsContext';
 import { useTheme } from '../context/ThemeContext';
-import { getRunsSummary, getOverallStats, formatDuration } from '../lib/analytics';
+import { getRunsSummary, getOverallStats, formatDuration, getSlowTests, getMostFailingTests, getTagStats } from '../lib/analytics';
 import { clsx } from '../lib/clsx';
 import { format } from 'date-fns';
 import { chartColors, getChartTheme } from '../lib/theme';
+
+const TAG_COLORS = ['#a855f7', '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#f97316', '#06b6d4', '#ec4899', '#8b5cf6', '#10b981'];
 
 function KpiCard({
   label, value, icon: Icon, iconColor, trend, trendLabel,
@@ -124,6 +126,113 @@ export function DashboardPage() {
 
   const runsSummary = useMemo(() => getRunsSummary(runs), [runs]);
   const stats = useMemo(() => getOverallStats(runs), [runs]);
+  const slowTests = useMemo(() => getSlowTests(runs), [runs]);
+  const failingTests = useMemo(() => getMostFailingTests(runs), [runs]);
+  const tagStats = useMemo(() => getTagStats(runs), [runs]);
+
+  // Test-case ID tag pattern: @f1, @f100, @f101 etc. (starts with "f" + any digits)
+  const isTestIdTag = (tag: string) => /^f\d+$/i.test(tag);
+
+  // Unique suites: description tags (feature names) vs test-case ID tags
+  const suiteTags = useMemo(() => {
+    const map = new Map<string, { suite: string; file: string; descTags: Set<string>; testTags: Set<string> }>();
+    for (const run of runs) {
+      for (const spec of run.specs) {
+        if (spec.tags.length === 0) continue;
+        const suiteName = spec.suitePath[0] ?? spec.file;
+        const key = spec.file + '||' + suiteName;
+        if (!map.has(key)) {
+          map.set(key, { suite: suiteName, file: spec.file, descTags: new Set(), testTags: new Set() });
+        }
+        const entry = map.get(key)!;
+        // Suite-level tags: from suitePath names (e.g. "Activities tests @activities @binder")
+        for (const part of spec.suitePath) {
+          for (const m of part.matchAll(/@([a-zA-Z][a-zA-Z0-9_]*)/g)) {
+            if (!isTestIdTag(m[1])) entry.descTags.add(m[1]);
+          }
+        }
+        // Also from spec.tags directly (covers tests with no describe block)
+        for (const tag of spec.tags) {
+          if (isTestIdTag(tag)) entry.testTags.add(tag);
+          else entry.descTags.add(tag);
+        }
+      }
+    }
+    return Array.from(map.values())
+      .filter((e) => e.descTags.size > 0 || e.testTags.size > 0)
+      .map((e) => ({
+        suite: e.suite,
+        file: e.file,
+        descTags: Array.from(e.descTags),
+        testTags: Array.from(e.testTags).sort(),
+      }))
+      .sort((a, b) => a.suite.localeCompare(b.suite));
+  }, [runs]);
+
+  // Tag frequency: how many suites each tag appears in
+  const tagFrequency = useMemo(() => {
+    const freq = new Map<string, number>();
+    for (const row of suiteTags) {
+      for (const tag of row.descTags) freq.set(tag, (freq.get(tag) ?? 0) + 1);
+    }
+    return freq;
+  }, [suiteTags]);
+
+  // Stable per-tag color: same tag always gets same color across all rows
+  const tagColorMap = useMemo(() => {
+    const allTags = new Set<string>();
+    for (const row of suiteTags) {
+      row.descTags.forEach((t) => allTags.add(t));
+      row.testTags.forEach((t) => allTags.add(t));
+    }
+    const sorted = Array.from(allTags).sort();
+    const map = new Map<string, string>();
+    sorted.forEach((tag, i) => map.set(tag, TAG_COLORS[i % TAG_COLORS.length]));
+    return map;
+  }, [suiteTags]);
+
+  const suiteGroups = useMemo(() => {
+    const groups = new Map<string, { folder: string; suites: typeof suiteTags }>();
+
+    for (const s of suiteTags) {
+      const parts = s.file.replace(/\\/g, '/').split('/');
+      const folder = parts.length > 1 ? parts[parts.length - 2] : 'Snapshot';
+      if (!groups.has(folder)) groups.set(folder, { folder, suites: [] });
+      groups.get(folder)!.suites.push(s);
+    }
+
+    return Array.from(groups.values())
+      .map((g) => {
+        // Folder tags = intersection: only tags shared by ALL specs in the folder
+        const specTagSets = g.suites.map((s) => new Set(s.descTags));
+        const folderTags = specTagSets.length === 0 ? [] :
+          [...specTagSets[0]].filter((tag) => specTagSets.every((set) => set.has(tag)));
+        const folderTagSet = new Set(folderTags);
+
+        return {
+          folder: g.folder,
+          folderTags: folderTags.sort((a, b) =>
+            (tagFrequency.get(b) ?? 0) - (tagFrequency.get(a) ?? 0) || a.localeCompare(b)
+          ),
+          specs: g.suites.map((s) => {
+            const parts = s.file.replace(/\\/g, '/').split('/');
+            return {
+              name: parts[parts.length - 1],
+              file: s.file,
+              specDescTags: s.descTags.filter((t) => !folderTagSet.has(t)),
+              testTags: s.testTags,
+            };
+          }).sort((a, b) => a.name.localeCompare(b.name)),
+        };
+      })
+      // Sort folders by their primary shared tag so related folders cluster together
+      .sort((a, b) => {
+        const aTag = a.folderTags[0] ?? a.folder;
+        const bTag = b.folderTags[0] ?? b.folder;
+        if (aTag !== bTag) return aTag.localeCompare(bTag);
+        return a.folder.localeCompare(b.folder);
+      });
+  }, [suiteTags, tagFrequency]);
 
   const chartData = useMemo(() =>
     runsSummary.map((r) => ({
@@ -143,6 +252,14 @@ export function DashboardPage() {
   const flakyTrend = lastTwo.length === 2
     ? lastTwo[1].flaky - lastTwo[0].flaky
     : undefined;
+
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const toggleFolder = (folder: string) =>
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      next.has(folder) ? next.delete(folder) : next.add(folder);
+      return next;
+    });
 
   const handleUpload = () => fileInputRef.current?.click();
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,53 +365,166 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Recent runs table */}
-      <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
-        <div className={clsx('px-5 py-4 border-b', isDark ? 'border-gray-800' : 'border-gray-100')}>
-          <h3 className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>Recent Runs</h3>
+      {/* Slowest tests + Tag Distribution side by side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className={clsx('rounded-xl border p-5', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
+          <h3 className={clsx('text-sm font-semibold mb-4', isDark ? 'text-white' : 'text-gray-900')}>Top 10 Slowest Tests</h3>
+          {slowTests.length === 0 ? (
+            <p className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>No duration data available.</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={slowTests.map((t) => ({ name: t.title.length > 28 ? t.title.slice(0, 28) + '…' : t.title, avg: Math.round(t.avgDuration / 1000), max: Math.round(t.maxDuration / 1000) }))} layout="vertical" margin={{ top: 0, right: 16, left: 8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={ct.gridColor} horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11, fill: ct.textColor }} unit="s" />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: ct.textColor }} width={160} />
+                <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} formatter={(v: number) => [`${v}s`]} />
+                <Bar dataKey="avg" fill={chartColors.blue} name="Avg (s)" radius={[0, 3, 3, 0]} />
+                <Bar dataKey="max" fill={chartColors.primary} name="Max (s)" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className={clsx(isDark ? 'text-gray-400 bg-gray-900' : 'text-gray-500 bg-gray-50')}>
-                {['Run', 'Date', 'Total', 'Passed', 'Failed', 'Flaky', 'Pass Rate'].map((h) => (
-                  <th key={h} className="text-left px-4 py-2.5 text-xs font-medium">{h}</th>
+
+        <div className={clsx('rounded-xl border p-5', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
+          <h3 className={clsx('text-sm font-semibold mb-4', isDark ? 'text-white' : 'text-gray-900')}>Tag Distribution</h3>
+          {tagStats.length === 0 ? (
+            <p className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>No tags found in test reports.</p>
+          ) : (
+            <div className="flex items-center gap-4">
+              <ResponsiveContainer width={180} height={180}>
+                <PieChart>
+                  <Pie data={tagStats.slice(0, 10)} cx="50%" cy="50%" outerRadius={80} paddingAngle={2} dataKey="count" nameKey="tag">
+                    {tagStats.slice(0, 10).map((_, i) => <Cell key={i} fill={TAG_COLORS[i % TAG_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex-1 flex flex-wrap gap-2">
+                {tagStats.slice(0, 10).map((t, i) => (
+                  <div key={t.tag} className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: TAG_COLORS[i % TAG_COLORS.length] }} />
+                    <span className={clsx('text-xs', isDark ? 'text-gray-300' : 'text-gray-600')}>@{t.tag}</span>
+                    <span className={clsx('text-xs font-bold', isDark ? 'text-gray-500' : 'text-gray-400')}>({t.count})</span>
+                  </div>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[...runsSummary].reverse().slice(0, 5).map((r, i) => (
-                <tr key={r.id} className={clsx(
-                  'border-t',
-                  isDark ? 'border-gray-800 hover:bg-gray-800/50' : 'border-gray-100 hover:bg-gray-50',
-                  i % 2 === 0 ? '' : isDark ? 'bg-gray-900/50' : 'bg-gray-50/50'
-                )}>
-                  <td className="px-4 py-3">
-                    <span className={clsx('font-mono text-xs px-1.5 py-0.5 rounded', isDark ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600')}>
-                      #{r.id.slice(0, 6)}
-                    </span>
-                  </td>
-                  <td className={clsx('px-4 py-3 text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>
-                    {format(r.startTime, 'MMM d, HH:mm')}
-                  </td>
-                  <td className={clsx('px-4 py-3 font-medium', isDark ? 'text-gray-200' : 'text-gray-700')}>{r.total}</td>
-                  <td className="px-4 py-3 text-green-500 font-medium">{r.passed}</td>
-                  <td className="px-4 py-3 text-red-500 font-medium">{r.failed}</td>
-                  <td className="px-4 py-3 text-yellow-500 font-medium">{r.flaky}</td>
-                  <td className="px-4 py-3">
-                    <span className={clsx(
-                      'text-xs font-semibold px-2 py-0.5 rounded-full',
-                      r.passRate >= 80 ? 'bg-green-500/20 text-green-400' : r.passRate >= 50 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400'
-                    )}>
-                      {r.passRate}%
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Most Failing Tests */}
+      {failingTests.length > 0 && (
+        <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
+          <div className={clsx('px-5 py-4 border-b', isDark ? 'border-gray-800' : 'border-gray-100')}>
+            <h3 className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>Most Failing Tests</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className={clsx('text-xs font-medium', isDark ? 'text-gray-400 bg-gray-800/50' : 'text-gray-500 bg-gray-50')}>
+                  {['Test Name', 'File', 'Failed Runs', 'Total Runs', 'Failure Rate'].map((h) => (
+                    <th key={h} className="text-left px-4 py-2.5">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {failingTests.map((t, i) => (
+                  <tr key={i} className={clsx('border-t', isDark ? 'border-gray-800 hover:bg-gray-800/50' : 'border-gray-100 hover:bg-gray-50')}>
+                    <td className={clsx('px-4 py-2.5 text-xs font-medium break-words', isDark ? 'text-gray-200' : 'text-gray-700')}>
+                      {[...t.suitePath, t.title.replace(/@\S+/g, '').trim()].filter(Boolean).join(' - ')}
+                    </td>
+                    <td className={clsx('px-4 py-2.5 text-xs font-mono break-all', isDark ? 'text-gray-400' : 'text-gray-500')}>{t.file}</td>
+                    <td className="px-4 py-2.5 text-red-500 text-xs font-medium">{t.failed}</td>
+                    <td className={clsx('px-4 py-2.5 text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>{t.total}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <div className={clsx('h-1.5 w-20 rounded-full overflow-hidden', isDark ? 'bg-gray-700' : 'bg-gray-200')}>
+                          <div className={clsx('h-full rounded-full', t.failureRate > 50 ? 'bg-red-500' : 'bg-yellow-500')} style={{ width: `${t.failureRate}%` }} />
+                        </div>
+                        <span className={clsx('text-xs font-semibold', t.failureRate > 50 ? 'text-red-400' : 'text-yellow-400')}>{t.failureRate}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Suites & Tags */}
+      {suiteGroups.length > 0 && (
+        <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
+          <div className={clsx('px-4 py-3 border-b flex items-center justify-between', isDark ? 'border-gray-800' : 'border-gray-100')}>
+            <h3 className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>Suites &amp; Test Tags</h3>
+            <span className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>{suiteTags.length} suites · {suiteGroups.length} folders</span>
+          </div>
+          <div className="overflow-y-auto max-h-[420px]">
+            {suiteGroups.map((group, gi) => {
+              const isCollapsed = collapsedFolders.has(group.folder);
+              return (
+              <div key={group.folder}>
+                {/* Folder row — clickable toggle */}
+                <button
+                  onClick={() => toggleFolder(group.folder)}
+                  className={clsx('w-full flex items-center gap-2 px-4 py-2 sticky top-0 z-10 text-left transition-colors', isDark ? 'bg-gray-800/80 backdrop-blur hover:bg-gray-800' : 'bg-gray-50/90 backdrop-blur hover:bg-gray-100/90')}
+                >
+                  {isCollapsed
+                    ? <ChevronRight className={clsx('w-3 h-3 flex-shrink-0', isDark ? 'text-gray-500' : 'text-gray-400')} />
+                    : <ChevronDown className={clsx('w-3 h-3 flex-shrink-0', isDark ? 'text-gray-500' : 'text-gray-400')} />
+                  }
+                  <Folder className={clsx('w-3.5 h-3.5 flex-shrink-0', isDark ? 'text-purple-400' : 'text-purple-500')} />
+                  <span className={clsx('text-xs font-bold tracking-wide', isDark ? 'text-gray-200' : 'text-gray-700')}>{group.folder}</span>
+                  <span className={clsx('text-[10px] px-1 rounded', isDark ? 'bg-gray-700 text-gray-500' : 'bg-gray-200 text-gray-400')}>{group.specs.length}</span>
+                  <div className="flex flex-wrap gap-1 ml-1">
+                    {group.folderTags.map((tag) => {
+                      const c = tagColorMap.get(tag) ?? TAG_COLORS[0];
+                      return (
+                        <span key={tag} className="inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-semibold"
+                          style={{ backgroundColor: c + '25', color: c }}>
+                          @{tag}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </button>
+                {/* Spec rows — hidden when collapsed */}
+                {!isCollapsed && group.specs.map((spec, si) => {
+                  const rowColor = TAG_COLORS[(gi * 3 + si) % TAG_COLORS.length];
+                  return (
+                    <div key={spec.file} className={clsx('flex items-center gap-2 pl-8 pr-4 py-1.5 border-t', isDark ? 'border-gray-800/60 hover:bg-gray-800/30' : 'border-gray-100 hover:bg-gray-50/60')}>
+                      <FileText className={clsx('w-3 h-3 flex-shrink-0', isDark ? 'text-gray-600' : 'text-gray-300')} />
+                      <span className={clsx('text-[11px] w-40 flex-shrink-0 truncate', isDark ? 'text-gray-400' : 'text-gray-500')} title={spec.name}>
+                        {spec.name.replace(/\.spec\.ts$/, '')}
+                      </span>
+                      <div className="flex flex-wrap gap-0.5">
+                        {spec.specDescTags.map((tag) => {
+                          const c = tagColorMap.get(tag) ?? TAG_COLORS[0];
+                          return (
+                            <span key={tag} className="inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-semibold"
+                              style={{ backgroundColor: c + '20', color: c }}>
+                              @{tag}
+                            </span>
+                          );
+                        })}
+                        {spec.testTags.map((tag) => (
+                          <span key={tag} className="inline-flex items-center px-1.5 py-px rounded text-[10px] font-medium"
+                            style={{ backgroundColor: rowColor + '1a', color: rowColor }}>
+                            @{tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
