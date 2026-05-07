@@ -29,12 +29,12 @@ export type GCSStatus =
   | { stage: 'loading-cache' }
   | { stage: 'scanning' }
   | { stage: 'downloading'; done: number; total: number }
-  | { stage: 'ready'; newFiles: number; cachedFiles: number; pruned: number }
+  | { stage: 'ready'; newFiles: number; cachedFiles: number; pruned: number; skipped: number }
   | { stage: 'error'; message: string };
 
-function threeMonthsAgo(): string {
+function daysAgo(n: number): string {
   const d = new Date();
-  d.setMonth(d.getMonth() - 3);
+  d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
 
@@ -51,8 +51,12 @@ function isManualUpload(jobName: string): boolean {
 }
 
 // Derive the test-results GCS folder from the report file path.
-// e.g. "reports/2026/03/11/job-name/results.json" → "reports/2026/03/11/job-name/test-results"
+// e.g. "reports/2026/03/11/job-name/results.json"                            → "reports/2026/03/11/job-name/test-results"
+// e.g. "snapshot/2026/04/12/07/job-name/playwright-report/results.json"      → "snapshot/2026/04/12/07/job-name/test-results"
 function deriveTestResultsPath(filePath: string): string {
+  if (filePath.includes('/playwright-report/')) {
+    return filePath.replace(/\/playwright-report\/[^/]+$/, '') + '/test-results';
+  }
   return filePath.replace(/\/[^/]+$/, '') + '/test-results';
 }
 
@@ -60,19 +64,36 @@ export async function loadGCSReports(
   onRunsLoaded: (runs: ParsedRun[]) => void,
   onStatus: (s: GCSStatus) => void,
   onProgress?: (done: number, total: number) => void,
+  onRunReplaced?: (oldId: string, newRun: ParsedRun) => void,
+  fromDate?: string,
 ): Promise<void> {
-  const cutoff = threeMonthsAgo();
+  // scanCutoff: how far back to fetch from GCS (defaults to 7 days)
+  // pruneCutoff: how far back to keep in IndexedDB (always 3 months)
+  const scanCutoff  = fromDate ?? daysAgo(7);
+  const pruneCutoff = daysAgo(90);
 
   // ── 1. Load from cache immediately ────────────────────────────────────────
   onStatus({ stage: 'loading-cache' });
   let cached: CacheEntry[] = [];
   try {
     cached = await cacheGetAll();
-    // Only show entries within the 3-month window
-    const recent = cached.filter(e => e.date >= cutoff);
+    // Show all cached entries within 3 months from reports/ prefix.
+    const recent = cached.filter(e => e.date >= pruneCutoff && e.path.startsWith('reports/'));
     if (recent.length > 0) {
       onRunsLoaded(recent.map(e => {
         if (!e.run.testResultsGCSPath) e.run.testResultsGCSPath = deriveTestResultsPath(e.path);
+        // Strip embedded base64 attachment bodies from cached runs.
+        for (const spec of e.run.specs ?? []) {
+          for (const t of spec.tests ?? []) {
+            for (const r of (t.results ?? []).filter(Boolean)) {
+              if (Array.isArray((r as any).attachments)) {
+                (r as any).attachments = (r as any).attachments.map((a: any) => ({
+                  name: a.name, path: a.path, contentType: a.contentType,
+                }));
+              }
+            }
+          }
+        }
         return e.run;
       }));
     }
@@ -80,49 +101,78 @@ export async function loadGCSReports(
     // IndexedDB unavailable (private browsing etc.) — proceed without cache
   }
 
-  const cachedPaths = new Set(cached.map(e => e.path));
+  const cachedByPath = new Map(cached.filter(e => e.path.startsWith('reports/')).map(e => [e.path, e]));
 
-  // ── 2. Scan GCS for all file metadata ─────────────────────────────────────
+  // ── 2. Scan GCS for file metadata (only within scanCutoff window) ──────────
   onStatus({ stage: 'scanning' });
+  console.log('[gcs] starting scan from', scanCutoff);
   let allFiles: GCSFileMeta[] = [];
   try {
-    const res = await fetch(`/api/gcs/scan?from=${cutoff}`);
-    if (!res.ok) throw new Error(`GCS scan failed: ${res.statusText}`);
+    console.log('[gcs] fetching /api/gcs/scan...');
+    const res = await fetch(`/api/gcs/scan?from=${scanCutoff}`);
+    console.log('[gcs] scan response status:', res.status);
+    if (!res.ok) {
+      const contentType = res.headers.get('content-type') ?? '';
+      if (contentType.includes('text/html') || res.status === 502 || res.status === 503) {
+        throw new Error('Express server not running — restart npm run dev');
+      }
+      let detail = res.statusText;
+      try { const body = await res.json(); detail = body.error || body.message || detail; } catch {}
+      throw new Error(`GCS scan failed (${res.status}): ${detail}`);
+    }
     allFiles = await res.json();
+    console.log('[gcs] scan returned', allFiles.length, 'files');
   } catch (err) {
+    console.error('[gcs] scan error:', err);
     onStatus({ stage: 'error', message: (err as Error).message });
     return;
   }
 
   // ── 3. Determine which files to download ──────────────────────────────────
-  // Past days: skip if already cached
-  // Today: always download (picks up new files added since last load)
   const toDownload = allFiles.filter(f => {
-    if (f.isToday) return !cachedPaths.has(f.path); // today: only new ones
-    return !cachedPaths.has(f.path);                 // past: skip if cached
+    const entry = cachedByPath.get(f.path);
+    if (!entry) return true;
+    if (f.isToday && f.updated) {
+      return new Date(f.updated).getTime() > entry.cachedAt;
+    }
+    return false;
   });
 
-  if (toDownload.length === 0) {
-    // Prune old cache entries silently
-    const pruned = await cachePrune(cutoff).catch(() => 0);
-    onStatus({ stage: 'ready', newFiles: 0, cachedFiles: cached.length, pruned });
-    return;
-  }
-
   // ── 4. Download new files ──────────────────────────────────────────────────
-  onStatus({ stage: 'downloading', done: 0, total: toDownload.length });
+  const MAX_DOWNLOAD_BYTES = 30 * 1024 * 1024;
+  const downloadable = toDownload.filter(f => f.size > 0 && f.size <= MAX_DOWNLOAD_BYTES);
+  const skipped = toDownload.length - downloadable.length;
+  if (skipped > 0) console.warn(`[gcs] skipping ${skipped} file(s) over 30 MB`);
+
+  onStatus({ stage: 'downloading', done: 0, total: downloadable.length });
   const newRuns: ParsedRun[] = [];
   let done = 0;
 
-  for (const file of toDownload) {
+  for (const file of downloadable) {
     try {
-      const res = await fetch(`/api/gcs/file?path=${encodeURIComponent(file.path)}`);
+      // Bypass browser HTTP cache for today's files — server sets max-age=86400
+      // which would otherwise serve stale content for re-runs or in-progress runs.
+      const fetchOpts: RequestInit = file.isToday ? { cache: 'no-store' } : {};
+      const res = await fetch(`/api/gcs/file?path=${encodeURIComponent(file.path)}`, fetchOpts);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: PlaywrightReport = await res.json();
 
       const displayName = jobDisplayName(file.jobName);
       const run = parseReport(json, displayName, 'main', '');
       run.source = isManualUpload(file.jobName) ? 'upload' : 'gcs';
+      // Strip embedded base64 attachment bodies only — traces/videos are separate
+      // GCS files loaded on-demand, so we only need name/path/contentType here.
+      for (const spec of run.specs) {
+        for (const t of spec.tests) {
+          for (const r of (t.results ?? []).filter(Boolean)) {
+            if (Array.isArray((r as any).attachments)) {
+              (r as any).attachments = (r as any).attachments.map((a: any) => ({
+                name: a.name, path: a.path, contentType: a.contentType,
+              }));
+            }
+          }
+        }
+      }
       if (!run.testResultsGCSPath) run.testResultsGCSPath = deriveTestResultsPath(file.path);
 
       const entry: CacheEntry = {
@@ -134,14 +184,22 @@ export async function loadGCSReports(
       };
 
       await cachePut(entry).catch(() => {}); // fail silently if storage full
-      newRuns.push(run);
+
+      // If this path was already cached with a different id (re-run changed startTime),
+      // replace the old stale run in memory instead of adding a duplicate.
+      const prevEntry = cachedByPath.get(file.path);
+      if (prevEntry && prevEntry.run.id !== run.id) {
+        onRunReplaced?.(prevEntry.run.id, run);
+      } else {
+        newRuns.push(run);
+      }
     } catch (err) {
       console.warn(`Failed to load ${file.path}:`, (err as Error).message);
     }
 
     done++;
-    onStatus({ stage: 'downloading', done, total: toDownload.length });
-    onProgress?.(done, toDownload.length);
+    onStatus({ stage: 'downloading', done, total: downloadable.length });
+    onProgress?.(done, downloadable.length);
   }
 
   if (newRuns.length > 0) {
@@ -149,13 +207,14 @@ export async function loadGCSReports(
   }
 
   // ── 5. Prune old entries ───────────────────────────────────────────────────
-  const pruned = await cachePrune(cutoff).catch(() => 0);
+  const pruned = await cachePrune(pruneCutoff).catch(() => 0);
 
   onStatus({
     stage: 'ready',
     newFiles: newRuns.length,
     cachedFiles: cached.length,
     pruned,
+    skipped,
   });
 }
 
@@ -166,6 +225,7 @@ export async function loadGCSReports(
 export async function refreshToday(
   onRunsLoaded: (runs: ParsedRun[]) => void,
   onStatus: (s: GCSStatus) => void,
+  onRunReplaced?: (oldId: string, newRun: ParsedRun) => void,
 ): Promise<void> {
   onStatus({ stage: 'scanning' });
   let todayFiles: GCSFileMeta[] = [];
@@ -179,11 +239,18 @@ export async function refreshToday(
   }
 
   const cached = await cacheGetAll().catch(() => [] as CacheEntry[]);
-  const cachedPaths = new Set(cached.map(e => e.path));
-  const newFiles = todayFiles.filter(f => !cachedPaths.has(f.path));
+  const cachedByPath = new Map(cached.map(e => [e.path, e]));
+  // Only re-download files not yet cached, or where GCS updated them after our last cache write.
+  // Fetches use cache:'no-store' so browser HTTP cache never serves stale data.
+  const newFiles = todayFiles.filter(f => {
+    const entry = cachedByPath.get(f.path);
+    if (!entry) return true;
+    if (f.updated) return new Date(f.updated).getTime() > entry.cachedAt;
+    return false;
+  });
 
   if (newFiles.length === 0) {
-    onStatus({ stage: 'ready', newFiles: 0, cachedFiles: cached.length, pruned: 0 });
+    onStatus({ stage: 'ready', newFiles: 0, cachedFiles: cached.length, pruned: 0, skipped: 0 });
     return;
   }
 
@@ -193,7 +260,8 @@ export async function refreshToday(
 
   for (const file of newFiles) {
     try {
-      const res = await fetch(`/api/gcs/file?path=${encodeURIComponent(file.path)}`);
+      // Always bypass browser cache in refreshToday — these are today's files
+      const res = await fetch(`/api/gcs/file?path=${encodeURIComponent(file.path)}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: PlaywrightReport = await res.json();
       const run = parseReport(json, jobDisplayName(file.jobName), 'main', '');
@@ -201,7 +269,13 @@ export async function refreshToday(
       if (!run.testResultsGCSPath) run.testResultsGCSPath = deriveTestResultsPath(file.path);
       const entry: CacheEntry = { path: file.path, run, cachedAt: Date.now(), date: file.date, jobName: file.jobName };
       await cachePut(entry).catch(() => {});
-      newRuns.push(run);
+
+      const prevEntry = cachedByPath.get(file.path);
+      if (prevEntry && prevEntry.run.id !== run.id) {
+        onRunReplaced?.(prevEntry.run.id, run);
+      } else {
+        newRuns.push(run);
+      }
     } catch (err) {
       console.warn(`Failed to refresh ${file.path}:`, (err as Error).message);
     }
@@ -210,5 +284,5 @@ export async function refreshToday(
   }
 
   if (newRuns.length > 0) onRunsLoaded(newRuns);
-  onStatus({ stage: 'ready', newFiles: newRuns.length, cachedFiles: cached.length, pruned: 0 });
+  onStatus({ stage: 'ready', newFiles: newRuns.length, cachedFiles: cached.length, pruned: 0, skipped: 0 });
 }

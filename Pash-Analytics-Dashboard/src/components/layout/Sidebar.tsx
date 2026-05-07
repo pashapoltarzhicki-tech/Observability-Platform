@@ -6,17 +6,18 @@ import {
   FlaskConical,
   TestTube2,
   AlertTriangle,
-  History,
   GitCompare,
-  Plug,
-  Settings,
+  ShieldCheck,
   Upload,
   RefreshCw,
+  Trash2,
   CloudOff,
   Cloud,
   Loader2,
   ChevronLeft,
   ChevronRight,
+  Info,
+  X,
 } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 import { useReports } from '../../context/ReportsContext';
@@ -29,9 +30,8 @@ const navItems = [
   { path: '/test-runs', label: 'Test Runs', icon: PlayCircle },
   { path: '/tests', label: 'Tests', icon: TestTube2 },
   { path: '/flaky-tests', label: 'Flaky Tests', icon: AlertTriangle },
-  { path: '/history', label: 'History', icon: History },
-  { path: '/compare', label: 'Compare', icon: GitCompare },
-  { path: '/settings', label: 'Settings', icon: Settings },
+  { path: '/compare',  label: 'Compare',  icon: GitCompare  },
+  { path: '/coverage', label: 'Coverage', icon: ShieldCheck },
 ];
 
 interface SidebarProps {
@@ -46,10 +46,12 @@ interface TooltipState {
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { isDark } = useTheme();
-  const { gcsStatus, refreshGCS, runs } = useReports();
+  const { gcsStatus, refreshGCS, runs, clearAll, loadedFrom, loadOlderRuns } = useReports();
+  const isAdmin = localStorage.getItem('isAdmin') === 'true';
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [errorModalOpen, setErrorModalOpen] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -81,14 +83,19 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return <Cloud className={clsx(cls, gcsStatus.stage === 'ready' ? 'text-green-400' : 'text-gray-500')} />;
   };
 
+  const isServerOffline = gcsStatus.stage === 'error' &&
+    (gcsStatus.message.includes('ECONNREFUSED') || gcsStatus.message.includes('fetch') ||
+     gcsStatus.message.includes('Failed to fetch') || gcsStatus.message.includes('not running'));
+
   const gcsLabel = gcsStatus.stage === 'idle' ? 'Connecting…'
     : gcsStatus.stage === 'loading-cache' ? 'Loading cache…'
     : gcsStatus.stage === 'scanning' ? 'Scanning GCS…'
     : gcsStatus.stage === 'downloading' ? `Downloading ${gcsStatus.done}/${gcsStatus.total}…`
     : gcsStatus.stage === 'ready'
       ? (gcsStatus.newFiles > 0 ? `+${gcsStatus.newFiles} new · ${runs.length} total` : `${runs.length} runs · up to date`)
+        + (gcsStatus.skipped > 0 ? ` · ${gcsStatus.skipped} skipped >30MB` : '')
     : gcsStatus.stage === 'error'
-      ? (gcsStatus.message.includes('ECONNREFUSED') || gcsStatus.message.includes('fetch') ? 'Server offline' : gcsStatus.message.slice(0, 40))
+      ? (isServerOffline ? 'Server offline' : 'Sync failed')
     : '';
 
   return (
@@ -167,17 +174,48 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <div className={clsx('flex-1 min-w-0', labelFade)}>
               <div className="flex items-center justify-between">
                 <span className={clsx('text-xs font-medium', isDark ? 'text-gray-300' : 'text-gray-700')}>GCS Sync</span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); refreshGCS(); }}
-                  disabled={gcsStatus.stage === 'scanning' || gcsStatus.stage === 'downloading'}
-                  className={clsx('p-1 rounded transition-colors disabled:opacity-40', isDark ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500')}
-                >
-                  <RefreshCw className={clsx('w-3 h-3', (gcsStatus.stage === 'scanning' || gcsStatus.stage === 'downloading') && 'animate-spin')} />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  {gcsStatus.stage === 'error' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setErrorModalOpen(true); }}
+                      title="View error details"
+                      className={clsx('p-1 rounded transition-colors', isDark ? 'hover:bg-gray-700 text-red-400' : 'hover:bg-gray-200 text-red-500')}
+                    >
+                      <Info className="w-3 h-3" />
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); refreshGCS(); }}
+                    disabled={gcsStatus.stage === 'scanning' || gcsStatus.stage === 'downloading'}
+                    title="Refresh"
+                    className={clsx('p-1 rounded transition-colors disabled:opacity-40', isDark ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500')}
+                  >
+                    <RefreshCw className={clsx('w-3 h-3', (gcsStatus.stage === 'scanning' || gcsStatus.stage === 'downloading') && 'animate-spin')} />
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); clearAll(); }}
+                      title="Clear site data & reload"
+                      className={clsx('p-1 rounded transition-colors', isDark ? 'hover:bg-red-900/40 text-gray-400 hover:text-red-400' : 'hover:bg-red-50 text-gray-500 hover:text-red-500')}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               </div>
-              <p className={clsx('text-[10px] leading-snug truncate', isDark ? 'text-gray-500' : 'text-gray-400')}>
+              <p className={clsx('text-[10px] leading-snug truncate',
+                gcsStatus.stage === 'error' ? 'text-red-400' : isDark ? 'text-gray-500' : 'text-gray-400'
+              )}>
                 {gcsLabel}
               </p>
+              {gcsStatus.stage === 'ready' && loadedFrom && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); loadOlderRuns(); }}
+                  className={clsx('text-[10px] mt-0.5 text-left underline underline-offset-2 transition-colors', isDark ? 'text-gray-600 hover:text-gray-400' : 'text-gray-400 hover:text-gray-600')}
+                >
+                  Load older runs (from {loadedFrom})
+                </button>
+              )}
             </div>
           </div>
 
@@ -233,6 +271,44 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <input ref={fileInputRef} type="file" multiple accept=".json,application/json" className="hidden" onChange={handleFileChange} />
       {pendingFiles.length > 0 && (
         <UploadModal files={pendingFiles} onClose={() => setPendingFiles([])} />
+      )}
+
+      {/* GCS error detail modal */}
+      {errorModalOpen && gcsStatus.stage === 'error' && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4" onClick={() => setErrorModalOpen(false)}>
+          <div className="absolute inset-0 bg-black/50" />
+          <div
+            className={clsx('relative w-full max-w-md rounded-xl border shadow-2xl p-5 space-y-3', isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200')}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CloudOff className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <span className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>GCS Sync Error</span>
+              </div>
+              <button onClick={() => setErrorModalOpen(false)} className={clsx('p-1 rounded transition-colors', isDark ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500')}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <pre className={clsx('text-xs rounded-lg p-3 whitespace-pre-wrap break-all font-mono leading-relaxed', isDark ? 'bg-gray-800 text-red-300' : 'bg-red-50 text-red-700 border border-red-200')}>
+              {gcsStatus.message}
+            </pre>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setErrorModalOpen(false); refreshGCS(); }}
+                className="flex-1 py-2 rounded-lg text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors"
+              >
+                Retry sync
+              </button>
+              <button
+                onClick={() => setErrorModalOpen(false)}
+                className={clsx('flex-1 py-2 rounded-lg text-xs font-medium transition-colors', isDark ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-100 hover:bg-gray-200 text-gray-700')}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

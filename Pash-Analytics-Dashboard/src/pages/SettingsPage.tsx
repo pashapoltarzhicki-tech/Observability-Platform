@@ -6,6 +6,8 @@ import { clsx } from '../lib/clsx';
 export function SettingsPage() {
   const { isDark, theme, setTheme } = useTheme();
   const { clearAll, runs } = useReports();
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('isAdmin') === 'true');
+  const [adminCode, setAdminCode] = useState('');
   const [appName, setAppName] = useState('BlackOre Automation Dashboard');
   const [defaultEnv, setDefaultEnv] = useState('production');
   const [defaultBranch, setDefaultBranch] = useState('main');
@@ -97,6 +99,41 @@ export function SettingsPage() {
             <option value="MM/dd/yyyy">MM/dd/yyyy</option>
           </select>
         </div>
+      </div>
+
+      {/* Admin */}
+      <div className={sectionClass}>
+        <h3 className={clsx('text-sm font-semibold', isDark ? 'text-white' : 'text-gray-900')}>Admin</h3>
+        {isAdmin ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <p className={clsx('text-sm font-medium', isDark ? 'text-gray-200' : 'text-gray-700')}>Admin mode enabled</p>
+              <p className={clsx('text-xs', isDark ? 'text-gray-400' : 'text-gray-500')}>You have access to destructive actions</p>
+            </div>
+            <button
+              onClick={() => { localStorage.removeItem('isAdmin'); setIsAdmin(false); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+            >
+              Disable Admin
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              placeholder="Admin code"
+              value={adminCode}
+              onChange={(e) => setAdminCode(e.target.value)}
+              className={clsx('flex-1 rounded-lg px-3 py-2 text-sm border outline-none focus:ring-2 focus:ring-purple-500', isDark ? 'bg-gray-800 border-gray-700 text-gray-200' : 'bg-white border-gray-200 text-gray-700')}
+            />
+            <button
+              onClick={() => { if (adminCode === 'blackore-admin') { localStorage.setItem('isAdmin', 'true'); setIsAdmin(true); setAdminCode(''); } }}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition-colors"
+            >
+              Enable
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Data */}

@@ -233,6 +233,7 @@ function Section({
             <>
               {/* Column headers */}
               <div className={clsx('flex items-center gap-4 px-4 py-1.5 border-t text-[10px] font-semibold uppercase tracking-wide', isDark ? 'border-gray-800 text-gray-600 bg-gray-800/30' : 'border-gray-100 text-gray-400 bg-gray-50/50')}>
+                <span className="w-3.5 flex-shrink-0" />
                 <span className="flex-1">Test</span>
                 <span className="flex-shrink-0">Last 12 runs</span>
                 <span className="flex-shrink-0 w-28">Flakiness</span>

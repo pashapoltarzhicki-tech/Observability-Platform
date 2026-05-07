@@ -13,18 +13,11 @@ import { format } from 'date-fns';
 import { chartColors, getChartTheme } from '../lib/theme';
 import { FlatSpec } from '../types/app';
 import { PlaywrightAttachment, PlaywrightResult } from '../types/playwright';
+import { shortTestName } from '../lib/utils';
 
 type Tab = 'summary' | 'specs' | 'history' | 'configuration' | 'insights';
 type SpecSortKey = 'title' | 'tests' | 'passed' | 'failed' | 'skipped' | 'flaky' | 'status';
 type SpecSortDir = 'asc' | 'desc';
-
-function shortTestName(title: string): string {
-  const name = (title.split(' > ').pop() ?? title).trim();
-  const noTags = name.replace(/(\s*-?\s*@\S+)+$/, '').trim();
-  const parts = noTags.split(' - ');
-  const cutAt = parts.findIndex((p, i) => i > 0 && /^\d+$/.test(p.trim()));
-  return (cutAt > 0 ? parts.slice(0, cutAt) : parts).join(' - ');
-}
 
 
 function resolveAttachmentUrl(path: string | undefined, testResultsGCSPath: string): string | null {
@@ -902,32 +895,49 @@ export function TestRunDetailPage() {
                 </div>
               )}
 
-              {/* Test counts */}
+              {/* Test counts — click to jump to Specs with filter */}
               <div className="grid grid-cols-4 gap-2 mb-3">
                 {[
-                  { label: 'Total',  value: total,  color: isDark ? 'text-white' : 'text-gray-900',  bg: isDark ? 'bg-gray-800' : 'bg-gray-50',           Icon: CheckCircle2 },
-                  { label: 'Passed', value: passed, color: 'text-green-400',                          bg: isDark ? 'bg-green-500/10' : 'bg-green-50',       Icon: CheckCircle2 },
-                  { label: 'Failed', value: failed, color: failed > 0 ? 'text-red-400'    : isDark ? 'text-gray-500' : 'text-gray-400', bg: failed > 0 ? isDark ? 'bg-red-500/10'    : 'bg-red-50'    : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: XCircle },
-                  { label: 'Flaky',  value: flaky,  color: flaky  > 0 ? 'text-yellow-400' : isDark ? 'text-gray-500' : 'text-gray-400', bg: flaky  > 0 ? isDark ? 'bg-yellow-500/10' : 'bg-yellow-50' : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: AlertTriangle },
-                ].map(({ label, value, color, bg, Icon }) => (
-                  <div key={label} className={clsx('rounded-lg p-3 flex flex-col gap-1', bg)}>
+                  { label: 'Total',  value: total,  filter: 'all'    as const, color: isDark ? 'text-white' : 'text-gray-900',  bg: isDark ? 'bg-gray-800' : 'bg-gray-50',           Icon: CheckCircle2 },
+                  { label: 'Passed', value: passed, filter: 'passed' as const, color: 'text-green-400',                          bg: isDark ? 'bg-green-500/10' : 'bg-green-50',       Icon: CheckCircle2 },
+                  { label: 'Failed', value: failed, filter: 'failed' as const, color: failed > 0 ? 'text-red-400'    : isDark ? 'text-gray-500' : 'text-gray-400', bg: failed > 0 ? isDark ? 'bg-red-500/10'    : 'bg-red-50'    : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: XCircle },
+                  { label: 'Flaky',  value: flaky,  filter: 'flaky'  as const, color: flaky  > 0 ? 'text-yellow-400' : isDark ? 'text-gray-500' : 'text-gray-400', bg: flaky  > 0 ? isDark ? 'bg-yellow-500/10' : 'bg-yellow-50' : isDark ? 'bg-gray-800' : 'bg-gray-50', Icon: AlertTriangle },
+                ].map(({ label, value, filter, color, bg, Icon }) => (
+                  <button
+                    key={label}
+                    onClick={() => { setSpecStatusFilter(filter); setActiveTab('specs'); }}
+                    className={clsx('rounded-lg p-3 flex flex-col gap-1 text-left transition-opacity hover:opacity-75 active:opacity-60', bg)}
+                  >
                     <div className="flex items-center gap-1">
                       <Icon className={clsx('w-3 h-3', color)} />
                       <span className={clsx('text-[10px]', isDark ? 'text-gray-400' : 'text-gray-500')}>{label}</span>
                     </div>
                     <p className={clsx('text-xl font-bold leading-none', color)}>{value}</p>
-                  </div>
+                  </button>
                 ))}
               </div>
 
               {/* Run meta */}
               <div className="grid grid-cols-4 gap-2">
                 {[
-                  { label: 'Skipped',  value: skipped,                                Icon: MinusCircle },
-                  { label: 'Duration', value: formatDuration(run.duration),            Icon: Clock },
-                  { label: 'Workers',  value: run.config.workers ?? '—',               Icon: Cpu },
-                  { label: 'Retries',  value: run.config.projects?.[0]?.retries ?? 0,  Icon: RefreshCw },
-                ].map(({ label, value, Icon }) => (
+                  { label: 'Skipped',  value: skipped,                                Icon: MinusCircle, filter: 'skipped' as const },
+                  { label: 'Duration', value: formatDuration(run.duration),            Icon: Clock,       filter: null },
+                  { label: 'Workers',  value: run.config.workers ?? '—',               Icon: Cpu,         filter: null },
+                  { label: 'Retries',  value: run.config.projects?.[0]?.retries ?? 0,  Icon: RefreshCw,   filter: null },
+                ].map(({ label, value, Icon, filter }) => (
+                  filter ? (
+                  <button
+                    key={label}
+                    onClick={() => { setSpecStatusFilter(filter); setActiveTab('specs'); }}
+                    className={clsx('rounded-lg p-3 flex flex-col gap-1 text-left transition-opacity hover:opacity-75 active:opacity-60', isDark ? 'bg-gray-800' : 'bg-gray-50')}
+                  >
+                    <div className="flex items-center gap-1">
+                      <Icon className={clsx('w-3 h-3', isDark ? 'text-gray-500' : 'text-gray-400')} />
+                      <span className={clsx('text-[10px]', isDark ? 'text-gray-400' : 'text-gray-500')}>{label}</span>
+                    </div>
+                    <p className={clsx('text-xl font-bold leading-none', isDark ? 'text-gray-200' : 'text-gray-800')}>{value}</p>
+                  </button>
+                  ) : (
                   <div key={label} className={clsx('rounded-lg p-3 flex flex-col gap-1', isDark ? 'bg-gray-800' : 'bg-gray-50')}>
                     <div className="flex items-center gap-1">
                       <Icon className={clsx('w-3 h-3', isDark ? 'text-gray-500' : 'text-gray-400')} />
@@ -935,6 +945,7 @@ export function TestRunDetailPage() {
                     </div>
                     <p className={clsx('text-xl font-bold leading-none', isDark ? 'text-gray-200' : 'text-gray-800')}>{value}</p>
                   </div>
+                  )
                 ))}
                 </div>
               </div>

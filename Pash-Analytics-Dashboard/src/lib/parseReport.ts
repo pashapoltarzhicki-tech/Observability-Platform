@@ -4,11 +4,11 @@ import { FlatSpec, ParsedRun } from '../types/app';
 function flattenSpecs(suites: PlaywrightSuite[], suitePath: string[] = []): FlatSpec[] {
   const result: FlatSpec[] = [];
 
-  for (const suite of suites) {
+  for (const suite of (suites ?? []).filter(Boolean)) {
     const currentPath = suite.title ? [...suitePath, suite.title] : suitePath;
 
     if (suite.specs) {
-      for (const spec of suite.specs) {
+      for (const spec of suite.specs.filter(Boolean)) {
         result.push(normalizeFlatSpec(spec, currentPath));
       }
     }
@@ -24,15 +24,15 @@ function flattenSpecs(suites: PlaywrightSuite[], suitePath: string[] = []): Flat
 function normalizeFlatSpec(spec: PlaywrightSpec, suitePath: string[]): FlatSpec {
   const fullTitle = [...suitePath, spec.title].filter(Boolean).join(' > ');
   return {
-    id: spec.id,
-    title: spec.title,
+    id: spec.id ?? '',
+    title: spec.title ?? '',
     fullTitle,
-    file: spec.file,
-    line: spec.line,
-    column: spec.column,
+    file: spec.file ?? '',
+    line: spec.line ?? 0,
+    column: spec.column ?? 0,
     tags: spec.tags ?? [],
-    ok: spec.ok,
-    tests: spec.tests ?? [],
+    ok: spec.ok ?? false,
+    tests: (spec.tests ?? []).filter(Boolean),
     suitePath,
   };
 }

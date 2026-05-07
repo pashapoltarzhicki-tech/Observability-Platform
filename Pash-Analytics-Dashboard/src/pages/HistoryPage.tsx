@@ -1,29 +1,49 @@
 import { useMemo } from 'react';
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer,
 } from 'recharts';
 import { useReports } from '../context/ReportsContext';
 import { useTheme } from '../context/ThemeContext';
 import { getRunsSummary, formatDuration } from '../lib/analytics';
 import { clsx } from '../lib/clsx';
 import { format } from 'date-fns';
-import { chartColors, getChartTheme } from '../lib/theme';
+import { getChartTheme, chartColors } from '../lib/theme';
 
 export function HistoryPage() {
-  const { filteredRuns: runs } = useReports();
+  const { filteredRuns: runs, dateFrom, dateTo } = useReports();
   const { isDark } = useTheme();
   const ct = getChartTheme(isDark);
   const runsSummary = useMemo(() => getRunsSummary(runs), [runs]);
 
-  const chartData = runsSummary.map((r) => ({
-    date: format(r.startTime, 'MMM d HH:mm'),
-    passRate: r.passRate,
-    passed: r.passed,
-    failed: r.failed,
-    flaky: r.flaky,
-    skipped: r.skipped,
-  }));
+  const chartData = useMemo(() => {
+    if (runs.length === 0) return [];
+    const dayMs = 864e5;
+    const ts = runs.map(r => r.startTime.getTime());
+    const rawStart = dateFrom ? new Date(dateFrom).getTime() : Math.min(...ts);
+    const rangeEnd = (dateTo ? new Date(dateTo).getTime() : Math.max(...ts)) + dayMs;
+    const actualSpanMs = ts.length > 1 ? Math.max(...ts) - Math.min(...ts) : 0;
+    const BUCKET_MS = actualSpanMs < dayMs ? 36e5 : dayMs; // 1h or 1d
+    const rangeStart = Math.floor(rawStart / BUCKET_MS) * BUCKET_MS;
+
+    const buckets: { label: string; passed: number; failed: number; flaky: number; skipped: number; total: number; passRate: number }[] = [];
+    for (let t = rangeStart; t < rangeEnd; t += BUCKET_MS) {
+      const label = BUCKET_MS < dayMs ? format(new Date(t), 'HH:mm') : format(new Date(t), 'MMM d');
+      let passed = 0, failed = 0, flaky = 0, skipped = 0;
+      for (const r of runs) {
+        const rt = r.startTime.getTime();
+        if (rt < t || rt >= t + BUCKET_MS) continue;
+        passed  += r.stats.expected;
+        failed  += r.stats.unexpected;
+        flaky   += r.stats.flaky;
+        skipped += r.stats.skipped;
+      }
+      const total = passed + failed + flaky + skipped;
+      const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+      buckets.push({ label, passed, failed, flaky, skipped, total, passRate });
+    }
+    return buckets;
+  }, [runs, dateFrom, dateTo]);
 
   if (runs.length === 0) {
     return (
@@ -41,29 +61,11 @@ export function HistoryPage() {
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={ct.gridColor} />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: ct.textColor }} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: ct.textColor }} interval="preserveStartEnd" />
             <YAxis tick={{ fontSize: 11, fill: ct.textColor }} domain={[0, 100]} unit="%" />
             <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} />
-            <Line type="monotone" dataKey="passRate" stroke={chartColors.primary} strokeWidth={2} dot={{ r: 4 }} name="Pass Rate %" />
+            <Line type="monotone" dataKey="passRate" stroke={chartColors.primary} strokeWidth={2} dot={{ r: 3 }} name="Pass Rate %" connectNulls />
           </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Stacked bar */}
-      <div className={clsx('rounded-xl border p-5', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
-        <h3 className={clsx('text-sm font-semibold mb-4', isDark ? 'text-white' : 'text-gray-900')}>Test Counts Per Run</h3>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={ct.gridColor} />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: ct.textColor }} />
-            <YAxis tick={{ fontSize: 11, fill: ct.textColor }} allowDecimals={false} />
-            <Tooltip contentStyle={{ background: ct.tooltipBg, border: `1px solid ${ct.tooltipBorder}`, borderRadius: 8, color: ct.tooltipText, fontSize: 12 }} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="passed" stackId="a" fill={chartColors.passed} name="Passed" />
-            <Bar dataKey="failed" stackId="a" fill={chartColors.failed} name="Failed" />
-            <Bar dataKey="flaky" stackId="a" fill={chartColors.flaky} name="Flaky" />
-            <Bar dataKey="skipped" stackId="a" fill={chartColors.skipped} name="Skipped" radius={[3, 3, 0, 0]} />
-          </BarChart>
         </ResponsiveContainer>
       </div>
 

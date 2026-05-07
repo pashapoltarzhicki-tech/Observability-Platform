@@ -77,6 +77,7 @@ export function TestRunsPage() {
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
   const [workflowSearch, setWorkflowSearch] = useState('');
+  const [perPage, setPerPage] = useState<number | 'all'>(10);
   const statusMenuRef = useRef<HTMLDivElement>(null);
   const workflowMenuRef = useRef<HTMLDivElement>(null);
 
@@ -329,8 +330,25 @@ export function TestRunsPage() {
 
         <div className="flex-1" />
         <p className={clsx('text-xs', isDark ? 'text-gray-500' : 'text-gray-400')}>
-          {summaries.length} run{summaries.length !== 1 ? 's' : ''}
+          {perPage === 'all' ? summaries.length : Math.min(perPage, summaries.length)} of {summaries.length} run{summaries.length !== 1 ? 's' : ''}
         </p>
+        <div className={clsx('flex rounded-lg border overflow-hidden', isDark ? 'border-gray-700' : 'border-gray-200')}>
+          {([10, 20, 50, 'all'] as (number | 'all')[]).map((v) => (
+            <button
+              key={v}
+              onClick={() => setPerPage(v)}
+              className={clsx(
+                'px-2.5 py-1.5 text-xs font-medium transition-colors border-r last:border-r-0',
+                isDark ? 'border-gray-700' : 'border-gray-200',
+                perPage === v
+                  ? 'bg-purple-600 text-white'
+                  : isDark ? 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700' : 'bg-white text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+              )}
+            >
+              {v === 'all' ? 'All' : v}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className={clsx('rounded-xl border overflow-hidden', isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200')}>
@@ -351,7 +369,7 @@ export function TestRunsPage() {
               </tr>
             </thead>
             <tbody>
-              {summaries.map((r, idx) => (
+              {(perPage === 'all' ? summaries : summaries.slice(0, perPage)).map((r, idx) => (
                 <tr
                   key={r.id}
                   onClick={() => navigate(`/test-runs/${r.id}`)}

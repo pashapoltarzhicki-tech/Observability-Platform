@@ -40,8 +40,13 @@ interface Props {
   onClose: () => void;
 }
 
+function getRunGroupKey(r: { source?: string; filename: string }) {
+  const isUpload = (r.source ?? 'gcs') === 'upload';
+  return isUpload ? 'manual' : (r.filename.split('-')[0] || 'other');
+}
+
 export function SearchOverlay({ open, onClose }: Props) {
-  const { runs } = useReports();
+  const { filteredRuns } = useReports();
   const { isDark } = useTheme();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
@@ -63,6 +68,12 @@ export function SearchOverlay({ open, onClose }: Props) {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
     const results: Result[] = [];
+
+    // Apply suite filter from dashboard tab selection (persisted in sessionStorage)
+    const suiteGroup = sessionStorage.getItem('dash:group') ?? 'all';
+    const runs = suiteGroup === 'all'
+      ? filteredRuns
+      : filteredRuns.filter(r => getRunGroupKey(r) === suiteGroup);
 
     // — Runs ——————————————————————————————————————————
     runs.forEach((run) => {
@@ -140,7 +151,7 @@ export function SearchOverlay({ open, onClose }: Props) {
     });
 
     return results.slice(0, 40);
-  }, [query, runs, navigate, onClose]);
+  }, [query, filteredRuns, navigate, onClose]);
 
   // Group results
   const groups = useMemo(() => {
@@ -241,9 +252,16 @@ export function SearchOverlay({ open, onClose }: Props) {
               <div className="text-center">
                 <p className={clsx('text-sm font-medium', textMain)}>Search everything</p>
                 <p className={clsx('text-xs mt-0.5', textMuted)}>
-                  {runs.length > 0
-                    ? `${runs.reduce((s, r) => s + r.specs.length, 0)} tests across ${runs.length} runs`
-                    : 'No reports loaded yet'}
+                  {(() => {
+                    const suiteGroup = sessionStorage.getItem('dash:group') ?? 'all';
+                    const scopedRuns = suiteGroup === 'all'
+                      ? filteredRuns
+                      : filteredRuns.filter(r => getRunGroupKey(r) === suiteGroup);
+                    const label = suiteGroup !== 'all' ? ` · ${suiteGroup}` : '';
+                    return scopedRuns.length > 0
+                      ? `${scopedRuns.reduce((s, r) => s + r.specs.length, 0)} tests across ${scopedRuns.length} runs${label}`
+                      : 'No reports loaded yet';
+                  })()}
                 </p>
               </div>
               <div className="flex gap-2 mt-1">

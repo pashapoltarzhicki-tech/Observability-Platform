@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Bell, Sun, Moon, ChevronDown, User, LogOut, Settings, GitBranch, GitCommit, Database, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Search, Sun, Moon, ChevronDown, User, LogOut, Settings, GitBranch, GitCommit, Database, X } from 'lucide-react';
 import { DateRangePicker } from '../DateRangePicker';
 import { useTheme } from '../../context/ThemeContext';
 import { useReports } from '../../context/ReportsContext';
@@ -83,6 +84,7 @@ function FilterOption({ label, active, onClick, isDark, mono = false }: { label:
 }
 
 export function Header({ onSearchOpen }: HeaderProps) {
+  const navigate = useNavigate();
   const { isDark, toggleTheme } = useTheme();
   const { allBranches, allCommits, dateFrom, setDateFrom, dateTo, setDateTo, sourceFilter, setSourceFilter, branchFilter, setBranchFilter, commitFilter, setCommitFilter } = useReports();
 
@@ -90,7 +92,6 @@ export function Header({ onSearchOpen }: HeaderProps) {
   const [sourceOpen, setSourceOpen]       = useState(false);
   const [branchOpen, setBranchOpen]       = useState(false);
   const [commitOpen, setCommitOpen]       = useState(false);
-  const [notifCount]                      = useState(3);
 
   const userMenuRef = useRef<HTMLDivElement>(null);
   const sourceRef   = useRef<HTMLDivElement>(null);
@@ -113,12 +114,19 @@ export function Header({ onSearchOpen }: HeaderProps) {
     if (branchFilter !== 'all' && allBranches.length > 0 && !allBranches.includes(branchFilter)) setBranchFilter('all');
   }, [allBranches]);
   useEffect(() => {
-    if (commitFilter !== 'all' && allCommits.length > 0 && !allCommits.includes(commitFilter)) setCommitFilter('all');
+    if (commitFilter.length > 0) {
+      const stillValid = commitFilter.filter((c) => allCommits.includes(c));
+      if (stillValid.length !== commitFilter.length) setCommitFilter(stillValid);
+    }
   }, [allCommits]);
 
   const sourceLabel = sourceFilter === 'gcs' ? 'Argo' : sourceFilter === 'upload' ? 'Manual' : 'Source';
   const branchLabel = branchFilter === 'all' ? 'Branch' : branchFilter;
-  const commitLabel = commitFilter === 'all' ? 'Commit' : commitFilter.slice(0, 7);
+  const commitLabel = commitFilter.length === 0
+    ? 'Commit'
+    : commitFilter.length === 1
+      ? commitFilter[0].slice(0, 7)
+      : `${commitFilter.length} commits`;
 
   return (
     <header
@@ -130,22 +138,6 @@ export function Header({ onSearchOpen }: HeaderProps) {
       )}
     >
       <div className="flex-1 flex items-center gap-2 min-w-0">
-        {/* Search trigger */}
-        <button
-          onClick={onSearchOpen}
-          className={clsx(
-            'flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs border transition-colors flex-shrink-0 w-72',
-            isDark
-              ? 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300'
-              : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300 hover:text-gray-500'
-          )}
-        >
-          <Search className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="flex-1 text-left">Search…</span>
-          <kbd className={clsx('text-[10px] px-1.5 py-0.5 rounded border font-mono', isDark ? 'border-gray-700 bg-gray-900 text-gray-500' : 'border-gray-200 bg-gray-50 text-gray-400')}>
-            ⌘K
-          </kbd>
-        </button>
 
         {/* Source filter */}
         <FilterPill
@@ -172,12 +164,12 @@ export function Header({ onSearchOpen }: HeaderProps) {
           active={branchFilter !== 'all'}
           open={branchOpen}
           onToggle={() => setBranchOpen((v) => !v)}
-          onClear={() => { setBranchFilter('all'); setCommitFilter('all'); setBranchOpen(false); }}
+          onClear={() => { setBranchFilter('all'); setCommitFilter([]); setBranchOpen(false); }}
           isDark={isDark}
         >
           {[{ value: 'all', label: 'All branches' }, ...allBranches.map((b) => ({ value: b, label: b }))].map(({ value, label }) => (
             <FilterOption key={value} label={label} active={branchFilter === value} isDark={isDark}
-              onClick={() => { setBranchFilter(value); setCommitFilter('all'); setBranchOpen(false); }} />
+              onClick={() => { setBranchFilter(value); setCommitFilter([]); setBranchOpen(false); }} />
           ))}
         </FilterPill>
 
@@ -187,17 +179,23 @@ export function Header({ onSearchOpen }: HeaderProps) {
             containerRef={commitRef}
             icon={<GitCommit className="w-3.5 h-3.5" />}
             label={commitLabel}
-            active={commitFilter !== 'all'}
+            active={commitFilter.length > 0}
             open={commitOpen}
             onToggle={() => setCommitOpen((v) => !v)}
-            onClear={() => { setCommitFilter('all'); setCommitOpen(false); }}
+            onClear={() => { setCommitFilter([]); setCommitOpen(false); }}
             isDark={isDark}
           >
-            <FilterOption label="All commits" active={commitFilter === 'all'} isDark={isDark}
-              onClick={() => { setCommitFilter('all'); setCommitOpen(false); }} />
+            <FilterOption label="All commits" active={commitFilter.length === 0} isDark={isDark}
+              onClick={() => { setCommitFilter([]); setCommitOpen(false); }} />
             {allCommits.map((c) => (
-              <FilterOption key={c} label={c.slice(0, 7)} active={commitFilter === c} isDark={isDark} mono
-                onClick={() => { setCommitFilter(c); setCommitOpen(false); }} />
+              <FilterOption key={c} label={c.slice(0, 7)} active={commitFilter.includes(c)} isDark={isDark} mono
+                onClick={() => {
+                  setCommitFilter(
+                    commitFilter.includes(c)
+                      ? commitFilter.filter((x) => x !== c)
+                      : [...commitFilter, c]
+                  );
+                }} />
             ))}
           </FilterPill>
         )}
@@ -213,16 +211,6 @@ export function Header({ onSearchOpen }: HeaderProps) {
 
       {/* Right section */}
       <div className="flex items-center gap-2 flex-shrink-0">
-        {/* Notification bell */}
-        <button className={clsx('relative p-1.5 rounded-lg transition-colors', isDark ? 'hover:bg-gray-800 text-gray-400' : 'hover:bg-gray-100 text-gray-500')}>
-          <Bell className="w-4 h-4" />
-          {notifCount > 0 && (
-            <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-purple-600 rounded-full text-white text-[9px] flex items-center justify-center font-bold">
-              {notifCount}
-            </span>
-          )}
-        </button>
-
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}
@@ -245,13 +233,11 @@ export function Header({ onSearchOpen }: HeaderProps) {
 
           {userMenuOpen && (
             <div className={clsx('absolute right-0 top-full mt-1 w-44 rounded-xl border shadow-lg py-1 z-50', isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200')}>
-              {[{ icon: User, label: 'Profile' }, { icon: Settings, label: 'Settings' }, { icon: LogOut, label: 'Logout' }].map(({ icon: Icon, label }) => (
-                <button key={label} onClick={() => setUserMenuOpen(false)}
-                  className={clsx('w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors', isDark ? 'text-gray-300 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-50')}
-                >
-                  <Icon className="w-4 h-4" />{label}
-                </button>
-              ))}
+              <button onClick={() => { setUserMenuOpen(false); navigate('/settings'); }}
+                className={clsx('w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors', isDark ? 'text-gray-300 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-50')}
+              >
+                <Settings className="w-4 h-4" />Settings
+              </button>
             </div>
           )}
         </div>

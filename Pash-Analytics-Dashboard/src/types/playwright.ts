@@ -3,6 +3,7 @@
 export interface PlaywrightConfig {
   version?: string;
   workers?: number;
+  metadata?: { actualWorkers?: number; [key: string]: unknown };
   projects?: PlaywrightProject[];
   configFile?: string;
   rootDir?: string;

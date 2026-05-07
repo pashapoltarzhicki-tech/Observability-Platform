@@ -34,12 +34,14 @@ interface ReportsContextValue {
   setSourceFilter: (v: SourceFilter) => void;
   branchFilter: string;
   setBranchFilter: (v: string) => void;
-  commitFilter: string;
-  setCommitFilter: (v: string) => void;
+  commitFilter: string[];
+  setCommitFilter: (v: string[]) => void;
   allCommits: string[];
   // GCS sync
   gcsStatus: GCSStatus;
   refreshGCS: () => void;
+  loadedFrom: string;
+  loadOlderRuns: () => void;
 }
 
 const ReportsContext = createContext<ReportsContextValue>({
@@ -64,11 +66,13 @@ const ReportsContext = createContext<ReportsContextValue>({
   setSourceFilter: () => {},
   branchFilter: 'all',
   setBranchFilter: () => {},
-  commitFilter: 'all',
+  commitFilter: [],
   setCommitFilter: () => {},
   allCommits: [],
   gcsStatus: { stage: 'idle' },
   refreshGCS: () => {},
+  loadedFrom: '',
+  loadOlderRuns: () => {},
 });
 
 export function ReportsProvider({ children }: { children: React.ReactNode }) {
@@ -76,12 +80,13 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+  const [dateFrom, setDateFrom] = useState(() => new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString());
   const [dateTo, setDateTo] = useState(() => new Date().toISOString());
   const [gcsStatus, setGCSStatus] = useState<GCSStatus>({ stage: 'idle' });
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('gcs');
   const [branchFilter, setBranchFilter] = useState<string>('all');
-  const [commitFilter, setCommitFilter] = useState<string>('all');
+  const [commitFilter, setCommitFilter] = useState<string[]>([]);
+  const [loadedFrom, setLoadedFrom] = useState<string>('');
   const initialLoadDone = useRef(false);
   const isLoadingGCS = useRef(false);
 
@@ -130,27 +135,52 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   }, [preCommitRuns]);
 
   const filteredRuns = useMemo(() => {
-    if (commitFilter === 'all') return preCommitRuns;
-    return preCommitRuns.filter((r) => r.commit === commitFilter);
+    if (commitFilter.length === 0) return preCommitRuns;
+    return preCommitRuns.filter((r) => r.commit && commitFilter.includes(r.commit));
   }, [preCommitRuns, commitFilter]);
 
-  // ── Dedup-safe run adder ───────────────────────────────────────────────────
+  // ── Upsert run adder — adds new runs and replaces existing ones by id ────────
+  // Replacing is necessary for today's runs that get re-downloaded when GCS has
+  // a newer version (e.g. a re-run overwrote the same results.json file).
   const addRuns = useCallback((newRuns: ParsedRun[]) => {
     setRuns((prev) => {
-      const existingIds = new Set(prev.map((r) => r.id));
-      const fresh = newRuns.filter((r) => !existingIds.has(r.id));
-      return fresh.length > 0 ? [...prev, ...fresh] : prev;
+      const map = new Map(prev.map((r) => [r.id, r]));
+      let changed = false;
+      for (const r of newRuns) {
+        if (map.get(r.id) !== r) { map.set(r.id, r); changed = true; }
+      }
+      return changed ? Array.from(map.values()) : prev;
+    });
+  }, []);
+
+  // ── Replace a stale run (re-run changed startTime → different id) ────────
+  const replaceRun = useCallback((oldId: string, newRun: ParsedRun) => {
+    setRuns((prev) => {
+      const without = prev.filter((r) => r.id !== oldId);
+      return without.some((r) => r.id === newRun.id)
+        ? without.map((r) => r.id === newRun.id ? newRun : r)
+        : [...without, newRun];
     });
   }, []);
 
   // ── GCS full load (initial or retry) ─────────────────────────────────────
-  const runGCSLoad = useCallback(() => {
+  const runGCSLoad = useCallback((fromDate?: string) => {
     if (isLoadingGCS.current) return;
     isLoadingGCS.current = true;
-    loadGCSReports(addRuns, setGCSStatus)
+    const from = fromDate ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    setLoadedFrom(from);
+    loadGCSReports(addRuns, setGCSStatus, undefined, replaceRun, from)
       .catch((err) => setGCSStatus({ stage: 'error', message: String(err) }))
       .finally(() => { isLoadingGCS.current = false; });
-  }, [addRuns]);
+  }, [addRuns, replaceRun]);
+
+  const loadOlderRuns = useCallback(() => {
+    // Extend back by 30 more days from current loadedFrom
+    const current = loadedFrom ? new Date(loadedFrom) : new Date();
+    current.setDate(current.getDate() - 7);
+    const newFrom = current.toISOString().slice(0, 10);
+    runGCSLoad(newFrom);
+  }, [loadedFrom, runGCSLoad]);
 
   // ── Auto-load from GCS on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -162,23 +192,23 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   // ── Auto-refresh every 5 minutes ──────────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => {
-      refreshToday(addRuns, setGCSStatus).catch((err) => {
+      refreshToday(addRuns, setGCSStatus, replaceRun).catch((err) => {
         setGCSStatus({ stage: 'error', message: String(err) });
       });
     }, 5 * 60 * 1000);
     return () => clearInterval(id);
-  }, [addRuns]);
+  }, [addRuns, replaceRun]);
 
   // Refresh: today-only when up to date, full reload when in error
   const refreshGCS = useCallback(() => {
     if (gcsStatus.stage === 'error') {
       runGCSLoad();
     } else {
-      refreshToday(addRuns, setGCSStatus).catch((err) => {
+      refreshToday(addRuns, setGCSStatus, replaceRun).catch((err) => {
         setGCSStatus({ stage: 'error', message: String(err) });
       });
     }
-  }, [addRuns, gcsStatus.stage, runGCSLoad]);
+  }, [addRuns, replaceRun, gcsStatus.stage, runGCSLoad]);
 
   // ── Manual file upload ─────────────────────────────────────────────────────
   const addFiles = useCallback(async (files: File[], meta?: UploadMeta) => {
@@ -227,11 +257,15 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     setRuns([]);
     setErrors([]);
     setSelectedTags([]);
-    setDateFrom(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+    setDateFrom(new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString());
     setDateTo(new Date().toISOString());
     await cacheClear().catch(() => {});
+    isLoadingGCS.current = false;
+    initialLoadDone.current = false;
     setGCSStatus({ stage: 'idle' });
-  }, []);
+    // Trigger fresh load after clearing
+    setTimeout(() => runGCSLoad(), 100);
+  }, [runGCSLoad]);
 
   return (
     <ReportsContext.Provider
@@ -243,7 +277,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         sourceFilter, setSourceFilter,
         branchFilter, setBranchFilter,
         commitFilter, setCommitFilter, allCommits,
-        gcsStatus, refreshGCS,
+        gcsStatus, refreshGCS, loadedFrom, loadOlderRuns,
       }}
     >
       {children}
